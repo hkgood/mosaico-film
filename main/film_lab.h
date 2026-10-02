@@ -53,6 +53,9 @@ void film_lab_set_root(film_lab_handle_t lab, const char *root);
 /** 是否还有任务在处理（含排队） */
 bool film_lab_busy(film_lab_handle_t lab);
 
+/** 冲洗或后台写盘还没结束（不阻塞；界面据此推迟休眠） */
+bool film_lab_working(film_lab_handle_t lab);
+
 /** 预约一个拍摄位，避免相机拍完时暗房还忙；返回 ESP_ERR_INVALID_STATE 表示忙 */
 esp_err_t film_lab_reserve(film_lab_handle_t lab);
 /** 撤销 film_lab_reserve（相机没能开始拍摄时） */

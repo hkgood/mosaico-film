@@ -73,7 +73,8 @@ static void detail_render(film_app_t *app, gfx_canvas_t *c)
     ui_icon_button(c, HEADER_BACK_X, HEADER_BACK_Y, &img_icon_back, false);
     char pos[24];
     snprintf(pos, sizeof(pos), "%u / %u", (unsigned)(d->index + 1), (unsigned)film_library_count(app->library));
-    const gfx_text_style_t st = ui_style(&font_jost_m11, 10.5f, 0.22f, COLOR_CREAM, 255, GFX_ALIGN_RIGHT, GFX_ROT_0);
+    const gfx_text_style_t st = ui_style(&font_jost_m14, UI_TEXT_LINK, 0.12f, COLOR_CREAM, 255, GFX_ALIGN_RIGHT,
+                                         GFX_ROT_0);
     gfx_text(c, &st, HEADER_RIGHT_X, HEADER_RIGHT_Y, pos);
 
     gfx_tile(c, &img_tex_vulc, gfx_rect(0, PHOTO_H, SCREEN_W, SCREEN_H - PHOTO_H), 0, 0, 0);
@@ -81,7 +82,8 @@ static void detail_render(film_app_t *app, gfx_canvas_t *c)
     if (p) {
         char meta[80];
         format_meta(p, meta, sizeof(meta));
-        const gfx_text_style_t ms = ui_style(&font_jost_m9, 9, 0.24f, COLOR_MUTED, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
+        const gfx_text_style_t ms =
+            ui_style(&font_jost_m11, UI_TEXT_LABEL, 0.2f, COLOR_MUTED, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
         gfx_text(c, &ms, BOTTOM_ROW_LEFT + 4, META_Y, meta);
     }
     ui_button_line(c, s_trash, NULL, &img_icon_trash, false, COLOR_CREAM, 71);

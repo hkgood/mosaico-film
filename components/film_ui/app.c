@@ -25,6 +25,7 @@ static const screen_ops_t *const s_screens[SCR_COUNT] = {
     [SCR_DETAIL] = &g_screen_detail,
     [SCR_REDEVELOP] = &g_screen_redevelop,
     [SCR_SHARE] = &g_screen_share,
+    [SCR_FILM] = &g_screen_film,
 };
 
 /* ---------------------------------------------------------------- 公共服务 */
@@ -81,6 +82,18 @@ void app_save_settings(film_app_t *app)
     if (app->port->settings_save) {
         app->port->settings_save(app->port->ctx, &app->settings, sizeof(app->settings));
     }
+}
+
+void app_select_film(film_app_t *app, int film)
+{
+    film = film_wrap(film);
+    if (film == app->settings.film) {
+        return;
+    }
+    app->settings.film = (uint8_t)film;
+    app_save_settings(app);
+    app_update_preview(app);
+    app_feedback(app, FILM_FEEDBACK_DETENT);
 }
 
 void app_update_preview(film_app_t *app)
@@ -179,7 +192,15 @@ void app_open_detail(film_app_t *app, size_t index)
 void app_open_redevelop(film_app_t *app, uint32_t source_id)
 {
     app->redev.source_id = source_id;
+    app->redev.picking_film = false;
     app_go(app, SCR_REDEVELOP);
+}
+
+void app_open_film(film_app_t *app, screen_id_t return_to, int current)
+{
+    app->film.return_to = return_to == SCR_REDEVELOP ? SCR_REDEVELOP : SCR_CAMERA;
+    app->film.current = film_wrap(current);
+    app_go(app, SCR_FILM);
 }
 
 void app_key_back_to_camera(film_app_t *app, film_key_t key, bool pressed)
@@ -197,10 +218,26 @@ void film_app_key(film_app_handle_t app, film_key_t key, bool pressed, uint32_t 
         return;
     }
     app->now = now_ms;
+    if (app_power_filter_key(app, pressed)) {
+        return;
+    }
     if (app->ops->key) {
         app->ops->key(app, key, pressed);
     }
     app->dirty = true;
+}
+
+void film_app_wake(film_app_handle_t app, uint32_t now_ms)
+{
+    if (app) {
+        app->now = now_ms;
+        app_power_activity(app);
+    }
+}
+
+film_display_t film_app_display(film_app_handle_t app)
+{
+    return app ? app->power.state : FILM_DISPLAY_ON;
 }
 
 /* ---------------------------------------------------------------- 手势识别 */
@@ -235,6 +272,9 @@ void film_app_pointer(film_app_handle_t app, int x, int y, bool pressed, uint32_
         return;
     }
     app->now = now_ms;
+    if (app_power_filter_pointer(app, pressed)) {
+        return;
+    }
     if (pressed && !app->touch.down) {
         app->touch.down = true;
         app->touch.dragging = false;
@@ -328,10 +368,13 @@ static void update_motion(film_app_t *app)
             app->gravity[i] += (a[i] - app->gravity[i]) * GRAVITY_SMOOTHING;
         }
     }
+    /* 休眠中晃醒的那一下不算摇一摇换卷 */
+    const bool was_awake = app_power_awake(app);
+    app_power_motion(app);
 
     /* 摇一摇：合加速度偏离 1 g 的峰值，0.9 s 内出现 3 次 */
     const float mag = sqrtf(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
-    if (fabsf(mag - 1.0f) > SHAKE_DELTA_G && app->now - app->shake_peaks[0] > SHAKE_PEAK_GAP_MS) {
+    if (was_awake && fabsf(mag - 1.0f) > SHAKE_DELTA_G && app->now - app->shake_peaks[0] > SHAKE_PEAK_GAP_MS) {
         memmove(&app->shake_peaks[1], &app->shake_peaks[0], 3 * sizeof(uint32_t));
         app->shake_peaks[0] = app->now;
         if (app->shake_peaks[2] && app->now - app->shake_peaks[2] < SHAKE_WINDOW_MS &&
@@ -495,6 +538,7 @@ esp_err_t film_app_create(const film_app_config_t *config, film_app_handle_t *re
     app->rot = GFX_ROT_0;
     app->rot_candidate = GFX_ROT_0;
     app->cam.film_pos = (float)app->settings.film;
+    app_power_init(app);
     app_go(app, SCR_CAMERA);
     *ret_handle = app;
     return ESP_OK;
@@ -505,6 +549,7 @@ void film_app_delete(film_app_handle_t app)
     if (!app) {
         return;
     }
+    app_power_deinit(app);
     if (app->ops && app->ops->leave) {
         app->ops->leave(app);
     }
@@ -527,26 +572,21 @@ void film_app_delete(film_app_handle_t app)
 }
 
 /**
- * 取景页才取相机帧；离开取景页时把手里的帧还回去。
- * 机身选择面板打开期间画面定格在手里这一帧：背后的取景被压暗、大半被面板盖住，
- * 不再取新帧，面板静止时整页就不用重绘，平台也可以停掉帧转换。
+ * 取景页才取相机帧；离开取景页时把手里的帧还回去，并让平台停掉帧转换。
+ * 机身选择面板打开、屏幕调暗或关闭期间画面定格在手里这一帧：不再取新帧，
+ * 画面静止时整页就不用重绘，平台也停掉帧转换。
  */
 static void update_preview_frame(film_app_t *app)
 {
     const film_port_t *p = app->port;
     app->camera_ok = p->camera_ready ? p->camera_ready(p->ctx) : false;
-    set_preview_paused(app, app->screen == SCR_CAMERA && app->cam.overlay == CAM_OVL_PICKER);
-    if (app->preview_paused) {
-        return;
+    const bool on_camera = app->screen == SCR_CAMERA;
+    if (!on_camera && app->frame) {
+        p->preview_release(p->ctx, app->frame);
+        app->frame = NULL;
     }
-    if (app->screen != SCR_CAMERA) {
-        if (app->frame) {
-            p->preview_release(p->ctx, app->frame);
-            app->frame = NULL;
-        }
-        return;
-    }
-    if (!p->preview_acquire) {
+    set_preview_paused(app, !on_camera || app->cam.overlay == CAM_OVL_PICKER || !app_power_awake(app));
+    if (app->preview_paused || !p->preview_acquire) {
         return;
     }
     const film_frame_t *f = p->preview_acquire(p->ctx);
@@ -555,8 +595,18 @@ static void update_preview_frame(film_app_t *app)
             p->preview_release(p->ctx, app->frame);
         }
         app->frame = f;
-        app->dirty = true;
+        app->live_dirty = true;
     }
+}
+
+/** 本帧要重画的区域：除了取景帧还有别的变化就整屏，否则只有取景框 */
+static gfx_rect_t frame_damage(const film_app_t *app)
+{
+    const gfx_rect_t full = gfx_rect(0, 0, SCREEN_W, SCREEN_H);
+    if (app->dirty || !app->ops->live_rect) {
+        return full;
+    }
+    return app->ops->live_rect(app);
 }
 
 /** 定期取平台缓存的电量；电量很低时在取景页提示一次 */
@@ -603,6 +653,7 @@ bool film_app_step(film_app_handle_t app, uint32_t now_ms)
     check_long_press(app);
     update_motion(app);
     update_battery(app);
+    app_power_step(app);
     update_preview_frame(app);
     if (app->ops->step && app->ops->step(app, dt > 200 ? 200 : dt)) {
         app->dirty = true;
@@ -613,9 +664,16 @@ bool film_app_step(film_app_handle_t app, uint32_t now_ms)
         }
         app->dirty = true;
     }
-    const bool redraw = app->dirty;
+    app->damage = frame_damage(app);
+    const bool redraw = app_power_redraw(app, app->dirty || app->live_dirty);
     app->dirty = false;
+    app->live_dirty = false;
     return redraw;
+}
+
+gfx_rect_t film_app_damage(film_app_handle_t app)
+{
+    return app ? app->damage : gfx_rect(0, 0, SCREEN_W, SCREEN_H);
 }
 
 void film_app_render(film_app_handle_t app, gfx_canvas_t *canvas)
@@ -624,6 +682,10 @@ void film_app_render(film_app_handle_t app, gfx_canvas_t *canvas)
         return;
     }
     ++app->frame_no;
+    if (app->power.state == FILM_DISPLAY_OFF) {
+        gfx_fill(canvas, gfx_rect(0, 0, SCREEN_W, SCREEN_H), 0x000000, 255);
+        return;
+    }
     app->ops->render(app, canvas);
     if (app->toast[0]) {
         const uint32_t left = app->toast_until > app->now ? app->toast_until - app->now : 0;

@@ -143,7 +143,7 @@ static const film_shell_intro_t s_intro = { .frame = intro_frame, .port = intro_
 
 /* ---------------------------------------------------------------- 入口 */
 
-static esp_err_t start_ui(film_feedback_handle_t feedback)
+static esp_err_t start_ui(film_feedback_handle_t feedback, esp_gsp_handle_t *ret_ui)
 {
     esp_gsp_config_t app_config;
     esp_err_t err = ui_bundle_open(&app_config);
@@ -181,6 +181,7 @@ static esp_err_t start_ui(film_feedback_handle_t feedback)
     if (film_shell_start(ui, &shell, &s_shell) != ESP_GSP_OK) {
         return ESP_FAIL;
     }
+    *ret_ui = ui;
     if (film_remote_input_start(s_shell) != ESP_OK) {
         ESP_LOGW(TAG, "remote touch unavailable");   /* 只影响 Gateway 远程点按 */
     }
@@ -210,14 +211,15 @@ void app_main(void)
     if (film_feedback_create(&fb, &feedback) != ESP_OK) {
         ESP_LOGW(TAG, "sound and vibration unavailable");
     }
-    if (start_ui(feedback) != ESP_OK) {
+    esp_gsp_handle_t ui = NULL;
+    if (start_ui(feedback, &ui) != ESP_OK) {
         return;
     }
 
     /* 慢的初始化放在动画播放期间 */
     const int64_t t0 = esp_timer_get_time();
     film_port_dev_handle_t port = NULL;
-    const film_port_dev_config_t port_config = { .feedback = feedback };
+    const film_port_dev_config_t port_config = { .feedback = feedback, .gsp = ui };
     const esp_err_t err = film_port_dev_create(&port_config, &port);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "device services failed: %s", esp_err_to_name(err));

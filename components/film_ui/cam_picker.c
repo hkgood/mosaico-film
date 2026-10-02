@@ -218,7 +218,8 @@ static void draw_card(film_app_t *app, gfx_canvas_t *c, int i)
     if (current) {
         gfx_stroke_round(c, r, CARD_RADIUS, 1, COLOR_AMBER, 245);
         circle(c, r.x + 10, r.y + r.h - 10, 3, COLOR_AMBER, 255);
-        const gfx_text_style_t tag = ui_style(&font_jost_m8, 7.5f, 0.24f, COLOR_AMBER, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
+        const gfx_text_style_t tag =
+            ui_style(&font_jost_m10, UI_TEXT_CAPTION, 0.2f, COLOR_AMBER, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
         gfx_text(c, &tag, r.x + 20, r.y + r.h - 8, "IN USE");
     } else {
         gfx_stroke_round(c, r, CARD_RADIUS, 1, 0x3B3A37, 255);
@@ -227,8 +228,9 @@ static void draw_card(film_app_t *app, gfx_canvas_t *c, int i)
     const gfx_text_style_t name = ui_style(&font_jost_m14, 14, 0.08f, current ? 0xF6F1E4 : COLOR_CREAM,
                                            current ? 255 : 210, GFX_ALIGN_CENTER, GFX_ROT_0);
     gfx_text(c, &name, r.x + r.w / 2, r.y + r.h + 15, b->name);
-    const gfx_text_style_t sub = ui_style(&font_jost_m9, 9, 0.22f, COLOR_MUTED, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
-    gfx_text(c, &sub, r.x + r.w / 2, r.y + r.h + 31, b->sub);
+    const gfx_text_style_t sub =
+        ui_style(&font_jost_m11, UI_TEXT_LABEL, 0.2f, COLOR_MUTED, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
+    gfx_text(c, &sub, r.x + r.w / 2, r.y + r.h + 32, b->sub);
 }
 
 void cam_picker_render(film_app_t *app, gfx_canvas_t *c)
@@ -259,8 +261,9 @@ void cam_picker_render(film_app_t *app, gfx_canvas_t *c)
     const gfx_text_style_t title =
         ui_style(&font_jost_m18, 18, 0.12f, COLOR_CREAM, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
     gfx_text(c, &title, SCREEN_W / 2, top + 28, "CAMERAS");
-    const gfx_text_style_t hint = ui_style(&font_jost_m8, 7.5f, 0.2f, COLOR_MUTED, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
-    gfx_text(c, &hint, SCREEN_W / 2, top + 42, "TAP A BODY TO LOAD IT");
+    const gfx_text_style_t hint =
+        ui_style(&font_jost_m10, UI_TEXT_CAPTION, 0.16f, COLOR_MUTED, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
+    gfx_text(c, &hint, SCREEN_W / 2, top + 44, "TAP A BODY TO LOAD IT");
     for (int i = 0; i < 2; ++i) {
         draw_card(app, c, i);
     }

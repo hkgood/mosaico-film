@@ -53,6 +53,17 @@
 #define BACK_HIT_H           76
 #define HEADER_RIGHT_HIT_W   140     /*!< 右侧文字的点击区宽度（从右边缘算） */
 
+/*
+ * 字号层级（px）：每档对应 assets 里烘焙好的一款字体。界面文字不小于 UI_TEXT_CAPTION，
+ * 只有竖拿时宽 38 px 的胶卷窗例外。
+ *   按钮 → font_jost_r16；可点的文字 → font_jost_m14；
+ *   刻字与次要信息 → font_jost_m11；最小说明字 → font_jost_m10。
+ */
+#define UI_TEXT_BUTTON       16.0f
+#define UI_TEXT_LINK         14.0f
+#define UI_TEXT_LABEL        10.5f
+#define UI_TEXT_CAPTION      10.0f
+
 /* 底栏按钮行（大图、分享、多选共用）：两端收进下方圆弧以内 */
 #define BOTTOM_ROW_Y         398
 #define BOTTOM_ROW_H         48
@@ -74,6 +85,13 @@
 #define DEVELOP_LINGER_MS    1600    /*!< SX-70 显影完成后停留多久自动回取景 */
 #define SKIN_SWAP_MS         260     /*!< 皮革合拢/打开各用时 */
 #define FRAME_PERIOD_MS      33
+#define SCROLL_FRICTION      0.0045f /*!< 网格页（相册、胶卷）甩动后的惯性衰减（每毫秒） */
+#define SCROLL_MIN_VELOCITY  20.0f   /*!< 惯性速度低于它（像素/秒）就停住 */
+
+/* ---------------------------------------------------------------- 屏幕休眠 */
+#define IDLE_DIM_MS              15000   /*!< 无操作多久调暗屏幕并停掉取景 */
+#define IDLE_OFF_MS              30000   /*!< 无操作多久关屏 */
+#define WAKE_MOTION_G            0.15f   /*!< 重力方向变化超过它算拿起或晃动（滤掉桌面的轻微震动） */
 
 /* ---------------------------------------------------------------- 电量 */
 #define BATTERY_POLL_MS          1000    /*!< 向平台取缓存读数的间隔（平台自己更低频地读电量计） */
@@ -88,6 +106,7 @@ typedef enum {
     SCR_DETAIL,
     SCR_REDEVELOP,
     SCR_SHARE,
+    SCR_FILM,
     SCR_COUNT,
 } screen_id_t;
 
@@ -125,6 +144,11 @@ typedef struct {
     void (*event)(film_app_t *app, const film_event_t *ev);
     /** 实体按键；NULL 表示本页忽略按键 */
     void (*key)(film_app_t *app, film_key_t key, bool pressed);
+    /**
+     * 取景帧画在哪：只换了取景帧时只重画并送出这块（其余部分沿用上一帧）。
+     * 取景帧以外的一切都不能依赖帧内容。NULL 表示本页不显示取景
+     */
+    gfx_rect_t (*live_rect)(const film_app_t *app);
 } screen_ops_t;
 
 /* ---------------------------------------------------------------- 持久化设置 */
@@ -158,10 +182,8 @@ typedef struct {
 #define CAM_STACK_PRINT_PX 58
 typedef enum {
     CAM_OVL_NONE = 0,
-    CAM_OVL_DIAL,           /*!< M6 大拨盘选胶卷 */
     CAM_OVL_POPOVER,        /*!< 长按胶卷窗：INSTANT / DATE */
     CAM_OVL_ROLLEND,        /*!< 一卷拍完 */
-    CAM_OVL_DRAWER,         /*!< SX-70 换胶片盒 */
     CAM_OVL_DEVELOPING,     /*!< SX-70 显影 */
     CAM_OVL_PICKER,         /*!< 从顶部下拉的机身选择（M6 / SX-70） */
 } cam_overlay_t;
@@ -188,12 +210,9 @@ typedef struct {
     bool counter_down;
     bool pack_down;
     uint8_t pressed_btn;        /*!< 弹出层里按下的按钮编号，0 表示没有 */
-    bool dial_dragging;
-    float dial_drag_pos;
 
     cam_overlay_t overlay;
     uint32_t overlay_t0;
-    float plate_y;              /*!< M6 铝板上沿（360 收起 / 300 拨盘） */
 
     shot_phase_t shot;
     uint32_t shot_t0;
@@ -255,7 +274,7 @@ typedef struct {
 
 typedef struct {
     uint32_t source_id;
-    float film_pos;
+    float film_pos;             /*!< 胶卷行的显示位置（动画），整数即选中 */
     int target_film;
     bool instant;
     bool holding_original;
@@ -272,10 +291,23 @@ typedef struct {
     bool developing;            /*!< 已提交正式冲洗 */
     uint32_t new_id;
     bool dragging;
-    int drag_start_film;
     float drag_start_pos;
     bool hold_down;
+    bool row_down;              /*!< 按着胶卷行 */
+    bool picking_film;          /*!< 去了全屏胶卷页：回来时保留预览与选择，不重新进入 */
 } redev_state_t;
+
+/* 全屏胶卷页：从哪一页打开、选中即回到哪一页 */
+typedef struct {
+    screen_id_t return_to;      /*!< SCR_CAMERA 或 SCR_REDEVELOP */
+    int current;                /*!< 打开时装着（或正在用）的胶卷，卡片高亮 */
+    float scroll;
+    float velocity;
+    bool dragging;
+    float drag_start_scroll;
+    int8_t pressed;             /*!< 按下的卡片，-1 表示没有 */
+    bool back_down;
+} film_page_state_t;
 
 #define SHARE_STACK_MAX 5
 #define SHARE_CARD_W 200
@@ -312,6 +344,8 @@ struct film_app_t {
     uint32_t now;
     uint32_t frame_no;
     bool dirty;
+    bool live_dirty;        /*!< 只有取景帧换了：重画 ops->live_rect 就够 */
+    gfx_rect_t damage;      /*!< 上次 step 判定要重画的区域（film_app_damage） */
 
     screen_id_t screen;
     const screen_ops_t *ops;
@@ -348,6 +382,18 @@ struct film_app_t {
     bool storage_ok;
     bool preview_paused;        /*!< 已请求平台暂停取景转换（机身选择面板打开期间画面定格） */
 
+    /* 屏幕休眠（app_power.c） */
+    struct {
+        film_display_t state;
+        bool started;           /*!< 第一次 step 之后才开始计时 */
+        uint32_t active_at;     /*!< 最近一次交互或忙碌的时刻 */
+        bool swallow_touch;     /*!< 唤醒的那一下触摸：到抬起为止都不交给页面 */
+        bool swallow_key;       /*!< 唤醒的那一下按键：到松开为止都不交给页面 */
+        bool off_drawn;         /*!< 关屏后的黑画面已经交出去 */
+        float motion_ref[3];    /*!< 上次算作"动了"时的重力方向 */
+        bool motion_ref_valid;
+    } power;
+
     /* 电量 */
     film_battery_t battery;
     bool battery_valid;
@@ -367,6 +413,7 @@ struct film_app_t {
     detail_state_t detail;
     redev_state_t redev;
     share_state_t share;
+    film_page_state_t film;
 };
 
 /* ---------------------------------------------------------------- 页面接口表 */
@@ -375,6 +422,7 @@ extern const screen_ops_t g_screen_album;
 extern const screen_ops_t g_screen_detail;
 extern const screen_ops_t g_screen_redevelop;
 extern const screen_ops_t g_screen_share;
+extern const screen_ops_t g_screen_film;
 
 /* ---------------------------------------------------------------- app.c 提供的公共服务 */
 void app_go(film_app_t *app, screen_id_t screen);
@@ -394,8 +442,34 @@ void app_share(film_app_t *app, const uint32_t *ids, size_t count, screen_id_t r
 /** 打开大图（序号 0 为最新） */
 void app_open_detail(film_app_t *app, size_t index);
 void app_open_redevelop(film_app_t *app, uint32_t source_id);
+/** 打开全屏胶卷页；current 为高亮的胶卷，选中后回到 return_to（SCR_CAMERA 或 SCR_REDEVELOP） */
+void app_open_film(film_app_t *app, screen_id_t return_to, int current);
+/** 取景用的胶卷换成 film（保存设置、通知取景、给一下档位反馈）；没变时什么也不做 */
+void app_select_film(film_app_t *app, int film);
+/** 重新冲洗页（scr_redevelop.c）：全屏胶卷页带回选中的胶卷 */
+void redevelop_set_film(film_app_t *app, int film);
 /** 暗房各页共用的按键行为：按下快门键回到取景（不拍照） */
 void app_key_back_to_camera(film_app_t *app, film_key_t key, bool pressed);
+
+/* ---------------------------------------------------------------- 屏幕休眠（app_power.c） */
+/** 创建界面时调用：屏幕为 ON 并通知平台 */
+void app_power_init(film_app_t *app);
+/** 删除界面前调用：把屏幕恢复为 ON */
+void app_power_deinit(film_app_t *app);
+/** 一次交互（不吞输入）：重置计时，休眠中则立即唤醒 */
+void app_power_activity(film_app_t *app);
+/** 触摸采样过滤：返回 true 表示这一下用来唤醒（或属于唤醒那一下），不交给页面 */
+bool app_power_filter_pointer(film_app_t *app, bool pressed);
+/** 按键过滤：同上 */
+bool app_power_filter_key(film_app_t *app, bool pressed);
+/** 每次重力方向更新后调用：拿起或晃动算作交互 */
+void app_power_motion(film_app_t *app);
+/** 每帧调用：忙碌时重置计时，空闲够久时逐级调暗、关屏 */
+void app_power_step(film_app_t *app);
+/** 屏幕为 ON（取景可以运行） */
+bool app_power_awake(const film_app_t *app);
+/** 本帧是否需要重绘：关屏后只交出一张黑画面 */
+bool app_power_redraw(film_app_t *app, bool dirty);
 
 /* ---------------------------------------------------------------- 胶卷文字 */
 typedef struct {
@@ -405,6 +479,8 @@ typedef struct {
     const char *iso;        /*!< "ISO 200" */
     const char *tagline;
     uint32_t label_color;
+    const gfx_image_t *canister;        /*!< 3D 暗盒：胶卷页网格 */
+    const gfx_image_t *canister_small;  /*!< 3D 暗盒：重新冲洗页的胶卷行 */
 } film_info_t;
 
 const film_info_t *film_info(int film);

@@ -36,31 +36,6 @@ static const gfx_rect_t s_btn_right = { BOTTOM_ROW_RIGHT - BTN_HALF_W, BOTTOM_RO
 static const gfx_rect_t s_btn_full = { BOTTOM_ROW_LEFT, BOTTOM_ROW_Y, BOTTOM_ROW_RIGHT - BOTTOM_ROW_LEFT,
                                        BOTTOM_ROW_H };
 
-/** 分享页是隔着手机操作说明后的主动作，使用确认稿的 16 px 常规字重。 */
-static void draw_share_button(gfx_canvas_t *c, gfx_rect_t r, const char *label, bool primary, bool pressed,
-                              uint32_t ink)
-{
-    ui_safe_check(r, 10, label);
-    if (primary) {
-        gfx_shadow(c, gfx_rect(r.x, r.y + 3, r.w, r.h), 10, 8, COLOR_BLACK, 115);
-        gfx_stroke_round(c, gfx_rect(r.x - 1, r.y - 1, r.w + 2, r.h + 2), 11, 1, COLOR_BLACK, 128);
-        gfx_tile(c, &img_tex_alu, r, r.x + r.w / 2 - 240, r.y + r.h / 2 - 240, 10);
-        gfx_gradient_v(c, r, 10, COLOR_WHITE, 40, COLOR_BLACK, 20);
-        gfx_fill(c, gfx_rect(r.x + 10, r.y, r.w - 20, 1), COLOR_WHITE, 204);
-    } else {
-        if (pressed) {
-            gfx_fill_round(c, r, 10, ink, 30);
-        }
-        gfx_stroke_round(c, r, 10, 1, ink, ink == COLOR_LED ? 210 : 71);
-    }
-    if (pressed) {
-        gfx_fill_round(c, r, 10, COLOR_BLACK, primary ? 40 : 18);
-    }
-    const gfx_text_style_t st =
-        ui_style(&font_jost_r16, 16, 0.02f, primary ? COLOR_ENGRAVE : ink, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
-    gfx_text(c, &st, r.x + r.w / 2, r.y + r.h / 2, label);
-}
-
 static bool is_hotspot(film_share_phase_t phase)
 {
     return phase == FILM_SHARE_HOTSPOT_JOIN || phase == FILM_SHARE_HOTSPOT_OPEN;
@@ -145,7 +120,7 @@ static void build_card(film_app_t *app)
     }
     char caption[FILM_SHARE_TEXT_LEN + 8];
     card_caption(&s->status, caption, sizeof(caption));
-    const gfx_text_style_t st = ui_style(&font_jost_m10, 10, 0.16f, 0x2E2D2A, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
+    const gfx_text_style_t st = ui_style(&font_jost_m12, 12, 0.12f, 0x2E2D2A, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
     gfx_text(&c, &st, SHARE_CARD_W / 2, 215, caption);
     s->card_valid = true;
 }
@@ -245,7 +220,7 @@ static void draw_media(film_app_t *app, gfx_canvas_t *c)
     format_size(s->total_bytes, size, sizeof(size));
     const gfx_text_style_t a = ui_style(&font_jost_m11, 10.5f, 0.22f, COLOR_CREAM, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
     gfx_text(c, &a, text_x, MEDIA_Y + 13, count);
-    const gfx_text_style_t b = ui_style(&font_jost_m9, 9, 0.22f, COLOR_MUTED, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
+    const gfx_text_style_t b = ui_style(&font_jost_m11, UI_TEXT_LABEL, 0.2f, COLOR_MUTED, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
     gfx_text(c, &b, text_x, MEDIA_Y + 30, size);
 }
 
@@ -285,8 +260,8 @@ static void share_render(film_app_t *app, gfx_canvas_t *c)
                       : st->phase == FILM_SHARE_ERROR        ? "OFFLINE"
                                                              : "";
     const gfx_text_style_t tg =
-        ui_style(&font_jost_m9, 9, 0.26f, st->phase == FILM_SHARE_ERROR ? COLOR_LED : COLOR_MUTED, 255,
-                 GFX_ALIGN_RIGHT, GFX_ROT_0);
+        ui_style(&font_jost_m11, UI_TEXT_LABEL, 0.22f, st->phase == FILM_SHARE_ERROR ? COLOR_LED : COLOR_MUTED,
+                 255, GFX_ALIGN_RIGHT, GFX_ROT_0);
     gfx_text(c, &tg, HEADER_RIGHT_X, TITLE_Y, tag);
 
     draw_card(app, c);
@@ -331,19 +306,19 @@ static void share_render(film_app_t *app, gfx_canvas_t *c)
     gfx_text(c, &ss, STEPS_X + 14, STATUS_Y + 5, status_text(st, buf, sizeof(buf)));
 
     if (is_hotspot(st->phase)) {
-        const gfx_text_style_t note = ui_cjk(&font_noto_11, COLOR_MUTED, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
+        const gfx_text_style_t note = ui_cjk(&font_noto_12, COLOR_MUTED, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
         gfx_text(c, &note, NOTE_X, NOTE_Y, "热点仅在本页开启，离开即关闭。");
         gfx_text(c, &note, NOTE_X, NOTE_Y + 18, "手机提示“此网络无法上网”属正常。");
     }
     if (st->phase == FILM_SHARE_HOTSPOT_JOIN) {
-        draw_share_button(c, s_btn_full, "CANCEL", false, false, COLOR_CREAM);
+        ui_button_line(c, s_btn_full, "CANCEL", NULL, false, COLOR_CREAM, 71);
     } else if (st->phase == FILM_SHARE_HOTSPOT_OPEN) {
-        draw_share_button(c, s_btn_full, "DONE", true, false, COLOR_ENGRAVE);
+        ui_button_primary(c, s_btn_full, "DONE", NULL, false, true);
     } else {
         const bool retry = st->phase == FILM_SHARE_ERROR;
-        draw_share_button(c, s_btn_left, retry ? "RETRY" : "USE HOTSPOT", false, s->button_hotspot_down,
-                          retry ? COLOR_LED : COLOR_CREAM);
-        draw_share_button(c, s_btn_right, "DONE", true, false, COLOR_ENGRAVE);
+        ui_button_line(c, s_btn_left, retry ? "RETRY" : "USE HOTSPOT", NULL, s->button_hotspot_down,
+                       retry ? COLOR_LED : COLOR_CREAM, retry ? 210 : 71);
+        ui_button_primary(c, s_btn_right, "DONE", NULL, false, true);
     }
 }
 

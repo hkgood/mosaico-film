@@ -1,6 +1,6 @@
 /*
- * SX-70 宝丽来机身：方形取景、左侧曝光拨轮、右侧计数窗、下方相纸堆 / 红色快门 / 胶片盒，
- * 换胶片盒抽屉，以及拍完后的显影过程（相纸从出片口吐出，约 8 秒从灰绿显影成像）。
+ * SX-70 宝丽来机身：方形取景、左侧曝光拨轮、右侧计数窗、下方相纸堆 / 红色快门 / 胶片盒
+ * （点一下打开全屏胶卷页），以及拍完后的显影过程（相纸从出片口吐出，约 8 秒从灰绿显影成像）。
  */
 #include <math.h>
 #include <stdio.h>
@@ -10,11 +10,6 @@
 
 #define SX_VF            gfx_rect(SX_VF_X, 0, FILM_VF_SX_W, FILM_VF_SX_H)
 #define SX_WHEEL         gfx_rect(16, 105, 23, 150)
-#define PACK_PITCH       55.0f
-/* 抽屉里 8 个胶片盒居中排开（两端离开下方圆角） */
-#define PACK_X0          (SCREEN_W / 2.0f - (FILM_ID_COUNT - 1) * PACK_PITCH / 2.0f)
-#define DRAWER_TEXT_X    28
-#define DRAWER_SLIDE_MS  200
 #define EMERGE_MS        900
 #define PAPER_ORIGIN_X   240      /*!< 显影相纸的旋转原点（上沿中点） */
 #define PAPER_ORIGIN_Y   42
@@ -138,47 +133,10 @@ static void draw_counter_window(gfx_canvas_t *c)
 }
 
 /** 胶片盒（sprite + 胶卷色条），cy 为中心 */
-static void draw_pack(gfx_canvas_t *c, int cx, int cy, int film, bool label, bool lifted)
+static void draw_pack(gfx_canvas_t *c, int cx, int cy, int film)
 {
-    if (lifted) {
-        gfx_shadow(c, gfx_rect(cx - 27, cy - 19, 54, 50), 4, 9, COLOR_BLACK, 120);
-    }
     ui_sprite(c, &img_pack, IMG_PACK_OX, IMG_PACK_OY, cx - 27, cy - 25, 255);
     gfx_fill(c, gfx_rect(cx - 27, cy + 25 - 9 - 4, 54, 4), film_info(film)->label_color, 255);
-    if (label) {
-        const char *iso = film_info(film)->iso;
-        const char *short_iso = strncmp(iso, "ISO ", 4) == 0 ? iso + 4 : iso;
-        const gfx_text_style_t st = ui_style(&font_jost_m9, 9, 0.08f, 0xD8D2C4, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
-        gfx_text(c, &st, cx, cy - 25 + 16, short_iso);
-    }
-}
-
-static void draw_drawer(film_app_t *app, gfx_canvas_t *c)
-{
-    const cam_state_t *cam = &app->cam;
-    const float t = cam_ease_out(cam_progress(app->now, cam->overlay_t0, DRAWER_SLIDE_MS));
-    const int dy = SX_DRAWER_Y + (int)lroundf((1.0f - t) * (SCREEN_H - SX_DRAWER_Y));
-    gfx_fill(c, gfx_rect(0, 0, SCREEN_W, dy), COLOR_BLACK, 64);
-    gfx_shadow(c, gfx_rect(0, dy, SCREEN_W, 20), 0, 16, COLOR_BLACK, 128);
-    gfx_blit(c, &img_sx_drawer, 0, dy, 255);
-    const film_info_t *info = film_info(app->settings.film);
-    char head[40];
-    snprintf(head, sizeof(head), "FILM  ·  %s", info->name);
-    const gfx_text_style_t h = ui_style(&font_jost_m11, 11, 0.22f, 0xF1E4CD, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
-    gfx_text(c, &h, DRAWER_TEXT_X, dy + 33, head);
-    const gfx_text_style_t tag = ui_style(&font_jost_r12, 11.5f, 0.0f, 0xF1E4CD, 153, GFX_ALIGN_LEFT, GFX_ROT_0);
-    gfx_text(c, &tag, DRAWER_TEXT_X, dy + 52, info->tagline);
-    const gfx_text_style_t iso = ui_style(&font_jost_m9, 9, 0.22f, 0xF1E4CD, 140, GFX_ALIGN_RIGHT, GFX_ROT_0);
-    gfx_text(c, &iso, SCREEN_W - DRAWER_TEXT_X, dy + 32, info->iso);
-    for (int i = 0; i < FILM_ID_COUNT; ++i) {
-        const int cx = (int)lroundf(PACK_X0 + (float)i * PACK_PITCH);
-        const bool sel = i == app->settings.film;
-        draw_pack(c, cx, dy + (sel ? 94 : 102), i, true, sel);
-        if (sel) {
-            gfx_glow(c, cx, dy + 141, 12, COLOR_AMBER, 70);
-            gfx_fill_round(c, gfx_rect(cx - 14, dy + 140, 28, 2), 1, COLOR_AMBER, 255);
-        }
-    }
 }
 
 /* ---------------------------------------------------------------- 显影 */
@@ -274,9 +232,6 @@ static void draw_developing(film_app_t *app, gfx_canvas_t *c)
 bool cam_sx_step(film_app_t *app)
 {
     cam_state_t *cam = &app->cam;
-    if (cam->overlay == CAM_OVL_DRAWER) {
-        return app->now - cam->overlay_t0 < DRAWER_SLIDE_MS + 40;
-    }
     if (cam->overlay != CAM_OVL_DEVELOPING) {
         return false;
     }
@@ -349,7 +304,8 @@ void cam_sx_render(film_app_t *app, gfx_canvas_t *c)
     const gfx_text_style_t cnt = ui_style(&font_jost_m18, 18, 0.0f, 0xEFE6CF, 255, GFX_ALIGN_CENTER, rot);
     gfx_text(c, &cnt, SX_COUNTER_X, SX_COUNTER_Y, n);
     ui_engrave(c, SX_COUNTER_X, SX_COUNTER_Y + COUNTER_EXP_DY, "EXP", true, GFX_ROT_0);
-    const gfx_text_style_t deco = ui_style(&font_jost_m9, 9, 0.42f, COLOR_ENGRAVE_LT, 140, GFX_ALIGN_CENTER, GFX_ROT_90);
+    const gfx_text_style_t deco =
+        ui_style(&font_jost_m11, UI_TEXT_LABEL, 0.36f, COLOR_ENGRAVE_LT, 140, GFX_ALIGN_CENTER, GFX_ROT_90);
     gfx_text(c, &deco, SX_COUNTER_X, 190, "INSTANT");
 
     draw_stack(app, c);
@@ -362,14 +318,12 @@ void cam_sx_render(film_app_t *app, gfx_canvas_t *c)
     if (cam->pack_down || cam->overlay == CAM_OVL_POPOVER) {
         gfx_glow(c, SX_PACK_X, SX_PACK_Y, 40, COLOR_AMBER, 70);
     }
-    draw_pack(c, SX_PACK_X, SX_PACK_Y, app->settings.film, false, false);
+    draw_pack(c, SX_PACK_X, SX_PACK_Y, app->settings.film);
     int dx, dy;
     ui_rot_vec(rot, 0, 33, &dx, &dy);
     ui_engrave(c, SX_PACK_X + dx, SX_PACK_Y + dy, film_info(app->settings.film)->name, true, rot);
 
-    if (cam->overlay == CAM_OVL_DRAWER) {
-        draw_drawer(app, c);
-    } else if (cam->overlay == CAM_OVL_POPOVER) {
+    if (cam->overlay == CAM_OVL_POPOVER) {
         gfx_dim(c, SX_VF, 184);
         cam_draw_popover(app, c, SX_PACK_X - POPOVER_CARET_DX);
     } else if (cam->overlay == CAM_OVL_ROLLEND) {
@@ -380,38 +334,6 @@ void cam_sx_render(film_app_t *app, gfx_canvas_t *c)
 static bool hit_circle(int x, int y, int cx, int cy, int r)
 {
     return (x - cx) * (x - cx) + (y - cy) * (y - cy) <= r * r;
-}
-
-static void drawer_gesture(film_app_t *app, const gesture_t *g)
-{
-    cam_state_t *cam = &app->cam;
-    switch (g->kind) {
-    case GEST_TAP:
-        if (g->y < SX_DRAWER_Y) {
-            cam_close(app);
-        } else if (g->y > SX_DRAWER_Y + 60) {
-            const int i = (int)lroundf(((float)g->x - PACK_X0) / PACK_PITCH);
-            if (i >= 0 && i < FILM_ID_COUNT) {
-                cam_select_film(app, i);
-            }
-        }
-        break;
-    case GEST_DRAG_BEGIN:
-        cam->dragging_film = g->horizontal;
-        cam->film_drag_start = app->settings.film;
-        break;
-    case GEST_DRAG:
-        if (cam->dragging_film) {
-            const int film = cam->film_drag_start + (int)lroundf((float)g->dx / PACK_PITCH);
-            cam_select_film(app, film < 0 ? 0 : (film >= FILM_ID_COUNT ? FILM_ID_COUNT - 1 : film));
-        }
-        break;
-    case GEST_DRAG_END:
-        cam->dragging_film = false;
-        break;
-    default:
-        break;
-    }
 }
 
 void cam_sx_gesture(film_app_t *app, const gesture_t *g)
@@ -425,10 +347,6 @@ void cam_sx_gesture(film_app_t *app, const gesture_t *g)
         return;
     }
     if (cam_overlay_gesture(app, g, SX_PACK_X - POPOVER_CARET_DX)) {
-        return;
-    }
-    if (cam->overlay == CAM_OVL_DRAWER) {
-        drawer_gesture(app, g);
         return;
     }
     const bool in_vf_or_wheel = g->y0 < FILM_VF_SX_H;
@@ -448,8 +366,8 @@ void cam_sx_gesture(film_app_t *app, const gesture_t *g)
         if (cam->shutter_down) {
             cam_fire(app);
         } else if (cam->pack_down) {
-            cam_open(app, CAM_OVL_DRAWER);
             app_feedback(app, FILM_FEEDBACK_CLICK);
+            app_open_film(app, SCR_CAMERA, app->settings.film);
         } else if (cam->counter_down) {
             app->album.selecting = false;
             app->album.scroll = 0;
@@ -474,7 +392,7 @@ void cam_sx_gesture(film_app_t *app, const gesture_t *g)
         break;
     case GEST_DRAG:
         if (cam->dragging_film) {
-            cam_select_film(app, cam->film_drag_start - g->du / FILM_SWIPE_PX);
+            app_select_film(app, cam->film_drag_start - g->du / FILM_SWIPE_PX);
         } else if (cam->dragging_ev) {
             cam_set_ev(app, cam->ev_drag_start - (float)g->dv / EV_PX_PER_STOP);
         }

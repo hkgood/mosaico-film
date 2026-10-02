@@ -205,8 +205,6 @@ SPRITES = [
     Sprite("win140_base", 140, 38, 8, centered("window base", 140, 38)),
     Sprite("win140_over", 140, 38, 8, centered("window over", 140, 38, inner=KNURLS)),
     Sprite("win140_glow", 140, 38, 16, centered("window glow", 140, 38)),
-    Sprite("win440_base", 440, 62, 8, centered("window base", 440, 62)),
-    Sprite("win440_over", 440, 62, 8, centered("window over", 440, 62, inner=KNURLS)),
     Sprite("lever_off", 36, 18, 4, centered("lever", 36, 18)),
     Sprite("lever_on", 36, 18, 4, centered("lever on", 36, 18)),
     Sprite("popover", 184, 101, 34, popover),
@@ -244,10 +242,6 @@ def sx_body_page():
             + box("leather", 0, 372, 480, 108, "background-position:0 -360px"))
 
 
-def sx_drawer_page():
-    return box("ribs-h", 0, 0, 480, 12) + box("leather", 0, 12, 480, 150, "background-position:0 -330px")
-
-
 def dev_bg_page():
     return (box("leather", 0, 0, 480, 480)
             + box("", 0, 0, 480, 480, "background:radial-gradient(ellipse at 50% 35%,rgba(255,220,180,.08),"
@@ -267,7 +261,6 @@ def dev_paper_page():
 PAGES = [
     # 名称, 页面 HTML, 裁剪框（None=按 alpha 自动裁），是否不透明
     ("sx_body", sx_body_page, (0, 0, 480, 480), True),
-    ("sx_drawer", sx_drawer_page, (0, 0, 480, 162), True),
     ("dev_bg", dev_bg_page, (0, 0, 480, 480), True),
     ("dev_paper", dev_paper_page, None, False),
 ]
@@ -323,6 +316,24 @@ def render_sprites(tmp: Path) -> dict[str, tuple[Image.Image, int, int]]:
     picker = HERE / "picker"
     out["picker_m6"] = (Image.open(picker / "picker_m6.png").convert("RGBA"), 0, 0)
     out["picker_sx70"] = (Image.open(picker / "picker_sx70.png").convert("RGBA"), 0, 0)
+    out.update(film_canisters())
+    return out
+
+
+# 全屏胶卷页的 135 暗盒：离线 3D 渲染（透明底、带投影），8 张按同一裁切框导出为 2 倍网格尺寸。
+# 顺序与 film_id_t 一致；每款缩成网格卡片与重新冲洗胶卷行两种尺寸。
+FILM_CANS = ["gold", "soft", "verde", "cross", "silver", "faded", "night", "pixel"]
+CAN_GRID_H = 116
+CAN_ROW_H = 70
+
+
+def film_canisters() -> dict[str, tuple[Image.Image, int, int]]:
+    out = {}
+    for name in FILM_CANS:
+        src = Image.open(HERE / "film_cans" / f"{name}.png").convert("RGBA")
+        for suffix, h in (("", CAN_GRID_H), ("_s", CAN_ROW_H)):
+            w = round(src.width * h / src.height)
+            out[f"can_{name}{suffix}"] = (src.resize((w, h), Image.LANCZOS), 0, 0)
     return out
 
 

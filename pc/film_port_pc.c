@@ -677,6 +677,25 @@ static bool pc_read_battery(void *ctx, film_battery_t *ret_battery)
     return p->battery_valid;
 }
 
+/* 模拟器没有背光可调：只记日志，关屏时界面自己交出黑画面 */
+static void pc_set_display(void *ctx, film_display_t state)
+{
+    static const char *const names[] = { "on", "dim", "off" };
+    (void)ctx;
+    if ((unsigned)state < sizeof(names) / sizeof(names[0])) {
+        fprintf(stderr, "film_port_pc: display %s\n", names[state]);
+    }
+}
+
+static bool pc_keep_awake(void *ctx)
+{
+    film_port_pc_handle_t p = ctx;
+    pthread_mutex_lock(&p->lock);
+    const bool busy = p->job_pending;
+    pthread_mutex_unlock(&p->lock);
+    return busy;
+}
+
 /* ---------------------------------------------------------------- 生命周期 */
 
 static esp_err_t load_assets(const char *path)
@@ -771,6 +790,8 @@ esp_err_t film_port_pc_create(const film_port_pc_config_t *config, film_port_pc_
         .read_accel = pc_read_accel,
         .wall_time = pc_wall_time,
         .read_battery = pc_read_battery,
+        .set_display = pc_set_display,
+        .keep_awake = pc_keep_awake,
     };
     *ret_handle = p;
     return ESP_OK;

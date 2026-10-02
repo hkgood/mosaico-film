@@ -361,7 +361,7 @@ static uint32_t prep_shot(cap_t *c, const char *scene, float fx, float fy, int f
     wait_body(c, instant);
     load_scene(c, scene, false);
     pan(c, fx, fy, fx, fy, 0);
-    cam_select_film(c->app, film);
+    app_select_film(c->app, film);
     wait_frames(c, 6);
     const size_t before = film_library_count(c->app->library);
     key_click(c, 3);
@@ -463,7 +463,7 @@ static uint32_t prep_album(cap_t *c)
 static void clip_m6_films(cap_t *c)
 {
     wait_body(c, false);
-    cam_select_film(c->app, FILM_ID_GOLD);
+    app_select_film(c->app, FILM_ID_GOLD);
     load_scene(c, "zurich", true);
     pan(c, 0.2f, 0.5f, 0.8f, 0.45f, 10 * FPS);
     wait_frames(c, 20);
@@ -482,7 +482,7 @@ static void clip_m6_films(cap_t *c)
 static void clip_m6_shot(cap_t *c)
 {
     setenv("FILM_SIM_DEVELOP_DELAY_MS", "30", 1);
-    cam_select_film(c->app, FILM_ID_GOLD);
+    app_select_film(c->app, FILM_ID_GOLD);
     load_scene(c, "arles", true);
     pan(c, 0.5f, 0.35f, 0.5f, 0.45f, 6 * FPS);
     wait_frames(c, 30);
@@ -521,7 +521,7 @@ static void clip_picker(cap_t *c)
 static void clip_sx_develop(cap_t *c)
 {
     setenv("FILM_SIM_DEVELOP_DELAY_MS", "70", 1);
-    cam_select_film(c->app, FILM_ID_GOLD);
+    app_select_film(c->app, FILM_ID_GOLD);
     load_scene(c, "coffee", true);
     pan(c, 0.5f, 0.5f, 0.52f, 0.48f, 6 * FPS);
     wait_frames(c, 30);
@@ -602,7 +602,7 @@ static void clip_finale(cap_t *c)
     key_click(c, 2);       /* 暗房里按红键回到取景 */
     wait_frames(c, 20);
     wait_body(c, false);
-    cam_select_film(c->app, FILM_ID_GOLD);
+    app_select_film(c->app, FILM_ID_GOLD);
     load_scene(c, "beach", true);
     pan(c, 0.3f, 1.0f, 0.7f, 0.9f, 7 * FPS);  /* 太阳在画面下部：窗口贴着下沿慢慢上移 */
     wait_frames(c, 10);

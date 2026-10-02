@@ -85,6 +85,12 @@ target_compile_definitions(film_darkroom_test PRIVATE
     FILM_TEST_SENSOR="${CMAKE_CURRENT_LIST_DIR}/../pc/assets/sensor_mock.ppm")
 add_test(NAME film_darkroom_test COMMAND film_darkroom_test "${CMAKE_CURRENT_BINARY_DIR}/darkroom_out")
 
+# 取景转换查表版与原公式逐位一致（直接编进 film_viewfinder.c，只借 film_darkroom 的头文件路径）
+add_executable(film_viewfinder_test test_film_viewfinder.c)
+target_link_libraries(film_viewfinder_test PRIVATE film_darkroom)
+target_compile_options(film_viewfinder_test PRIVATE -Wall -Wextra -Werror -O2)
+add_test(NAME film_viewfinder_test COMMAND film_viewfinder_test)
+
 add_executable(film_library_test test_film_library.c)
 target_link_libraries(film_library_test PRIVATE film_ui)
 target_compile_options(film_library_test PRIVATE -Wall -Wextra -Werror)
@@ -109,3 +115,25 @@ target_compile_options(film_ui_script PRIVATE -Wall -Wextra -Werror)
 target_compile_definitions(film_ui_script PRIVATE
     FILM_TEST_ASSETS="${COMPONENTS_DIR}/film_assets/assets.bin"
     FILM_TEST_SENSOR="${CMAKE_CURRENT_LIST_DIR}/../pc/assets/sensor_mock.ppm")
+
+# 屏幕休眠：虚拟时钟驱动完整 film_app（PC 平台服务，替换几个要观察的接口）
+add_executable(film_idle_test test_film_idle.c ppm_io.c "${CMAKE_CURRENT_LIST_DIR}/../pc/film_port_pc.c")
+target_include_directories(film_idle_test PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../pc" "${CMAKE_CURRENT_LIST_DIR}"
+    "${COMPONENTS_DIR}/film_ui")
+target_link_libraries(film_idle_test PRIVATE film_ui film_darkroom)
+target_compile_options(film_idle_test PRIVATE -Wall -Wextra -Werror)
+target_compile_definitions(film_idle_test PRIVATE
+    FILM_TEST_ASSETS="${COMPONENTS_DIR}/film_assets/assets.bin"
+    FILM_TEST_SENSOR="${CMAKE_CURRENT_LIST_DIR}/../pc/assets/sensor_mock.ppm")
+add_test(NAME film_idle_test COMMAND film_idle_test)
+
+# 局部重画：只换取景帧时只重画取景框，结果与整屏重画逐像素一致
+add_executable(film_damage_test test_film_damage.c ppm_io.c "${CMAKE_CURRENT_LIST_DIR}/../pc/film_port_pc.c")
+target_include_directories(film_damage_test PRIVATE "${CMAKE_CURRENT_LIST_DIR}/../pc" "${CMAKE_CURRENT_LIST_DIR}"
+    "${COMPONENTS_DIR}/film_ui")
+target_link_libraries(film_damage_test PRIVATE film_ui film_darkroom)
+target_compile_options(film_damage_test PRIVATE -Wall -Wextra -Werror)
+target_compile_definitions(film_damage_test PRIVATE
+    FILM_TEST_ASSETS="${COMPONENTS_DIR}/film_assets/assets.bin"
+    FILM_TEST_SENSOR="${CMAKE_CURRENT_LIST_DIR}/../pc/assets/sensor_mock.ppm")
+add_test(NAME film_damage_test COMMAND film_damage_test)

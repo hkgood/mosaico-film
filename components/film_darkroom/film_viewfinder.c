@@ -13,7 +13,38 @@
 #include "film_darkroom.h"
 #include "film_port.h"
 
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+/* 查表放内部 RAM：取景时整帧 PSRAM 数据流过缓存，放 flash 会被反复挤出 */
+#define LUT_ATTR DRAM_ATTR
+#else
+#define LUT_ATTR
+#endif
+
 #define TILE_ROWS 16    /*!< 每组取景行数；列偏移表 2×16×2 字节，放在栈上也只有 64 字节 */
+
+/*
+ * RGB565 查表：BT.601 每个分量 (c + 色度项) >> 8 都落在 [-277, 534]（B 分量最宽），
+ * 加上 CLAMP_OFS 作下标，一次查表同时完成截断到 0..255、截位、移到 565 里的位置，
+ * 省掉逐像素的比较分支。表在编译期生成（只读、线程安全），约 5 KB。
+ */
+#define CLAMP_OFS 288
+#define CLAMP_LEN 832
+
+#define REP4(f, i)   f(i), f((i) + 1), f((i) + 2), f((i) + 3)
+#define REP16(f, i)  REP4(f, i), REP4(f, (i) + 4), REP4(f, (i) + 8), REP4(f, (i) + 12)
+#define REP64(f, i)  REP16(f, i), REP16(f, (i) + 16), REP16(f, (i) + 32), REP16(f, (i) + 48)
+#define REP256(f, i) REP64(f, i), REP64(f, (i) + 64), REP64(f, (i) + 128), REP64(f, (i) + 192)
+#define REP832(f)    REP256(f, 0), REP256(f, 256), REP256(f, 512), REP64(f, 768)
+
+#define CLAMPED(i) ((i) < CLAMP_OFS ? 0 : (i) - CLAMP_OFS > 255 ? 255 : (i) - CLAMP_OFS)
+#define R565(i)    (uint16_t)((CLAMPED(i) >> 3) << 11)
+#define G565(i)    (uint16_t)((CLAMPED(i) >> 2) << 5)
+#define B565(i)    (uint16_t)(CLAMPED(i) >> 3)
+
+static LUT_ATTR const uint16_t k_r565[CLAMP_LEN] = { REP832(R565) };
+static LUT_ATTR const uint16_t k_g565[CLAMP_LEN] = { REP832(G565) };
+static LUT_ATTR const uint16_t k_b565[CLAMP_LEN] = { REP832(B565) };
 
 void film_viewfinder_size(bool instant, uint16_t *ret_w, uint16_t *ret_h)
 {
@@ -37,12 +68,15 @@ static inline void yuv_to_rgb(int y, int u, int v, uint8_t *rgb)
     rgb[2] = clamp_u8((c + 516 * d) >> 8);
 }
 
-/** BT.601 有限范围 YUV → RGB565（R 在高位） */
+/** BT.601 有限范围 YUV → RGB565（R 在高位），与 yuv_to_rgb 再截位打包逐位一致 */
 static inline uint16_t yuv_to_565(int y, int u, int v)
 {
-    uint8_t rgb[3];
-    yuv_to_rgb(y, u, v, rgb);
-    return (uint16_t)(((rgb[0] >> 3) << 11) | ((rgb[1] >> 2) << 5) | (rgb[2] >> 3));
+    const int c = 298 * (y - 16) + 128;
+    const int d = u - 128;
+    const int e = v - 128;
+    return (uint16_t)(k_r565[((c + 409 * e) >> 8) + CLAMP_OFS] |
+                      k_g565[((c - 100 * d - 208 * e) >> 8) + CLAMP_OFS] |
+                      k_b565[((c + 516 * d) >> 8) + CLAMP_OFS]);
 }
 
 void film_viewfinder_row_to_rgb888(const uint8_t *uyvy, uint32_t width, uint8_t *rgb)

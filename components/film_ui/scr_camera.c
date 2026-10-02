@@ -20,18 +20,16 @@
 #define DEVELOP_PILL_V       26      /*!< 胶囊上沿：落在亮框上沿（v = 18）之内 */
 #define SHOT_FLY_MS          380
 #define DEVELOP_PULSE_MS     900     /*!< "DEVELOPING" 指示灯的呼吸周期 */
-#define DIAL_PITCH           120
 #define WINDOW_PITCH         78
 #define WINDOW_PITCH_V       30
 #define FILM_ANIM_MS         90.0f
-#define PLATE_ANIM_MS        70.0f
 #define LIGHT_LEAK_CHANCE    3       /*!< 约三分之一的照片带随机漏光 */
 #define LEVEL_TOLERANCE_DEG  1.5f
 #define SHUTTER_HIT_R        46
 #define COUNTER_HIT_R        34
 /*
  * 亮框圆角：亮框上两角紧挨屏幕圆角，直角会越出圆角安全区约 15 px；
- * 半径 52 时横竖两种亮框尺寸都留 ≥ 4 px 余量（算上内外两圈淡光）。四角统一，拨盘打开时最矮也放得下。
+ * 半径 52 时横竖两种亮框尺寸都留 ≥ 4 px 余量（算上内外两圈淡光）。
  */
 #define BRIGHTLINE_RADIUS    52
 
@@ -107,18 +105,6 @@ void cam_set_ev(film_app_t *app, float ev)
     }
 }
 
-void cam_select_film(film_app_t *app, int film)
-{
-    film = film_wrap(film);
-    if (film == app->settings.film) {
-        return;
-    }
-    app->settings.film = (uint8_t)film;
-    app_save_settings(app);
-    app_update_preview(app);
-    app_feedback(app, FILM_FEEDBACK_DETENT);
-}
-
 void cam_open(film_app_t *app, cam_overlay_t overlay)
 {
     app->cam.overlay = overlay;
@@ -131,7 +117,6 @@ void cam_close(film_app_t *app)
     app->cam.overlay = CAM_OVL_NONE;
     app->cam.overlay_t0 = app->now;
     app->cam.pressed_btn = 0;
-    app->cam.dial_dragging = false;
 }
 
 void cam_switch_body(film_app_t *app, bool instant)
@@ -161,7 +146,7 @@ void cam_load_new_roll(film_app_t *app, bool change_film)
     app_feedback(app, FILM_FEEDBACK_CLICK);
     cam_close(app);
     if (change_film) {
-        cam_open(app, app->settings.instant ? CAM_OVL_DRAWER : CAM_OVL_DIAL);
+        app_open_film(app, SCR_CAMERA, app->settings.film);
     }
 }
 
@@ -239,7 +224,7 @@ void cam_draw_live(film_app_t *app, gfx_canvas_t *c, gfx_rect_t dst)
         }
         return;
     }
-    /* 帧比目标大时居中裁剪（拨盘打开时取景变矮） */
+    /* 帧比目标大时居中裁剪 */
     const int sx = f->width > dst.w ? (f->width - dst.w) / 2 : 0;
     const int sy = f->height > dst.h ? (f->height - dst.h) / 2 : 0;
     const int w = f->width < dst.w ? f->width : dst.w;
@@ -261,7 +246,8 @@ static void draw_ev_scale(film_app_t *app, gfx_canvas_t *c, const ui_frame_t *f,
         if (major) {
             char label[8];
             ui_format_ev(ev, label, sizeof(label));
-            const gfx_text_style_t st = ui_style(&font_jost_m9, 9, 0.05f, 0xFFFAEC, 235, GFX_ALIGN_RIGHT, f->rot);
+            const gfx_text_style_t st =
+                ui_style(&font_jost_m10, UI_TEXT_CAPTION, 0.05f, 0xFFFAEC, 235, GFX_ALIGN_RIGHT, f->rot);
             int x, y;
             ui_point(f, right - 17, v, &x, &y);
             gfx_text(c, &st, x, y, label);
@@ -455,11 +441,14 @@ void cam_draw_popover(film_app_t *app, gfx_canvas_t *c, int x)
 {
     const int y = POPOVER_Y;
     ui_sprite(c, &img_popover, IMG_POPOVER_OX, IMG_POPOVER_OY, x, y, 255);
-    const gfx_text_style_t title = ui_style(&font_jost_m10, 10, 0.22f, COLOR_ENGRAVE, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
-    const gfx_text_style_t hl = ui_style(&font_jost_m10, 10, 0.22f, COLOR_WHITE, 178, GFX_ALIGN_LEFT, GFX_ROT_0);
-    const gfx_text_style_t sub = ui_style(&font_jost_m8, 7.5f, 0.2f, 0x6B6964, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
-    gfx_text(c, &hl, x + 18, y + 28, "INSTANT");
-    gfx_text(c, &title, x + 18, y + 27, "INSTANT");
+    const gfx_text_style_t title =
+        ui_style(&font_jost_m14, UI_TEXT_LINK, 0.12f, COLOR_ENGRAVE, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
+    const gfx_text_style_t hl =
+        ui_style(&font_jost_m14, UI_TEXT_LINK, 0.12f, COLOR_WHITE, 178, GFX_ALIGN_LEFT, GFX_ROT_0);
+    const gfx_text_style_t sub =
+        ui_style(&font_jost_m10, UI_TEXT_CAPTION, 0.06f, 0x6B6964, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
+    gfx_text(c, &hl, x + 18, y + 25, "INSTANT");
+    gfx_text(c, &title, x + 18, y + 24, "INSTANT");
     gfx_text(c, &sub, x + 18, y + 40, "1 : 1  SX-70 BODY");
     gfx_text(c, &hl, x + 18, y + 70, "DATE");
     gfx_text(c, &title, x + 18, y + 69, "DATE");
@@ -487,8 +476,9 @@ void cam_draw_rollend(film_app_t *app, gfx_canvas_t *c)
     char line[64];
     snprintf(line, sizeof(line), "%u FRAMES  \xC2\xB7  %s  \xC2\xB7  ROLL %02u", (unsigned)app->settings.frame,
              film_info(app->settings.film)->name, (unsigned)app->settings.roll);
-    const gfx_text_style_t st = ui_style(&font_jost_m8, 7.5f, 0.16f, COLOR_MUTED, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
-    gfx_text(c, &st, 240, 202, line);
+    const gfx_text_style_t st =
+        ui_style(&font_jost_m10, UI_TEXT_CAPTION, 0.12f, COLOR_MUTED, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
+    gfx_text(c, &st, 240, 203, line);
     ui_button_primary(c, gfx_rect(120, 224, 240, 40), "LOAD NEW ROLL", NULL, app->cam.pressed_btn == 1, true);
     ui_button_line(c, gfx_rect(120, 272, 240, 34), "CHANGE FILM", NULL, app->cam.pressed_btn == 2, COLOR_CREAM, 71);
 }
@@ -519,7 +509,7 @@ void cam_draw_skin_swap(film_app_t *app, gfx_canvas_t *c)
         gfx_glow(c, 240 + dx, 240 + dy, 5, COLOR_AMBER, (uint8_t)(alpha / 2));
         gfx_circle_q4(c, (240 + dx) * 16, (240 + dy) * 16, 3 * 16, COLOR_AMBER, alpha);
         const gfx_text_style_t st =
-            ui_style(&font_jost_m9, 9, 0.24f, COLOR_CREAM, alpha, GFX_ALIGN_CENTER, GFX_ROT_0);
+            ui_style(&font_jost_m11, UI_TEXT_LABEL, 0.22f, COLOR_CREAM, alpha, GFX_ALIGN_CENTER, GFX_ROT_0);
         gfx_text(c, &st, 240, 292, "LOADING BODY");
     }
 }
@@ -596,14 +586,14 @@ static void draw_window_names(film_app_t *app, gfx_canvas_t *c)
             if (sel) {
                 const gfx_text_style_t w = ui_style(&font_jost_m10, 10, 0.02f, 0xF6F1E4, (uint8_t)(fade * 255.0f),
                                                     GFX_ALIGN_CENTER, app->rot);
-                const gfx_text_style_t n = ui_style(&font_jost_m8, 7.5f, 0.06f, COLOR_CREAM, (uint8_t)(fade * 180.0f),
+                const gfx_text_style_t n = ui_style(&font_jost_m9, 9, 0.04f, COLOR_CREAM, (uint8_t)(fade * 180.0f),
                                                     GFX_ALIGN_CENTER, app->rot);
-                ui_point(&f, f.w / 2, v - 5, &x, &y);
+                ui_point(&f, f.w / 2, v - 6, &x, &y);
                 gfx_text(c, &w, x, y, info->word);
                 ui_point(&f, f.w / 2, v + 7, &x, &y);
                 gfx_text(c, &n, x, y, info->number);
             } else {
-                const gfx_text_style_t w = ui_style(&font_jost_m8, 7.5f, 0.02f, COLOR_CREAM, (uint8_t)(fade * 97.0f),
+                const gfx_text_style_t w = ui_style(&font_jost_m9, 9, 0.02f, COLOR_CREAM, (uint8_t)(fade * 97.0f),
                                                     GFX_ALIGN_CENTER, app->rot);
                 ui_point(&f, f.w / 2, v, &x, &y);
                 gfx_text(c, &w, x, y, info->word);
@@ -657,43 +647,6 @@ static void draw_m6_controls(film_app_t *app, gfx_canvas_t *c)
     ui_rot_vec(rot, 0, -(half + 9), &dx, &dy);
     ui_index_mark(c, M6_WINDOW_X + dx, M6_WINDOW_Y + dy, rot);
     engrave_below(c, M6_WINDOW_X, M6_WINDOW_Y, vertical ? half + M6_LABEL_GAP_V : M6_LABEL_GAP, "FILM", false, rot);
-}
-
-/** 拨盘打开时铝板上的大滚筒 */
-static void draw_m6_dial(film_app_t *app, gfx_canvas_t *c, int py)
-{
-    const film_info_t *info = film_info(app->settings.film);
-    char head[32];
-    snprintf(head, sizeof(head), "FILM  ·  %s", info->iso);
-    ui_engrave(c, 240, py + 25, head, false, GFX_ROT_0);
-    const gfx_text_style_t tag = ui_style(&font_jost_r12, 12, 0.01f, COLOR_TAGLINE, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
-    gfx_text(c, &tag, 240, py + 44, info->tagline);
-    ui_index_mark(c, 240, py + 62, GFX_ROT_0);
-
-    const int wy = py + 98 - 31;
-    ui_sprite(c, &img_win440_base, IMG_WIN440_BASE_OX, IMG_WIN440_BASE_OY, 20, wy, 255);
-    const gfx_rect_t inner = gfx_rect(33, wy, 414, 62);
-    const gfx_rect_t saved = gfx_clip_push(c, inner);
-    const float pos = app->cam.film_pos;
-    const int base = (int)floorf(pos + 0.5f);
-    for (int k = -3; k <= 3; ++k) {
-        const float d = (float)(base + k) - pos;
-        const bool sel = fabsf(d) < 0.5f;
-        const int x = 240 + (int)lroundf(d * DIAL_PITCH);
-        const float edge = fminf((float)(x - inner.x), (float)(inner.x + inner.w - x)) / 100.0f;
-        const float fade = edge < 0 ? 0 : (edge > 1 ? 1 : edge);
-        const gfx_text_style_t st = ui_style(sel ? &font_jost_m22 : &font_jost_m12, sel ? 22 : 12, 0.08f,
-                                             sel ? 0xF6F1E4 : COLOR_CREAM, (uint8_t)(fade * (sel ? 255.0f : 97.0f)),
-                                             GFX_ALIGN_CENTER, GFX_ROT_0);
-        gfx_text(c, &st, x, wy + 31, film_info(base + k)->name);
-    }
-    gfx_clip_pop(c, saved);
-    ui_sprite(c, &img_win440_over, IMG_WIN440_OVER_OX, IMG_WIN440_OVER_OY, 20, wy, 255);
-    for (int i = 0; i < FILM_ID_COUNT; ++i) {
-        const bool on = i == app->settings.film;
-        gfx_circle_q4(c, (240 - 35 + i * 10) * 16, (py + 152) * 16 + 8, 40, on ? COLOR_AMBER : COLOR_ENGRAVE,
-                      on ? 255 : 89);
-    }
 }
 
 /**
@@ -808,12 +761,11 @@ static void draw_m6_shot(film_app_t *app, gfx_canvas_t *c)
 static void render_m6(film_app_t *app, gfx_canvas_t *c)
 {
     const cam_state_t *cam = &app->cam;
-    const int py = (int)lroundf(cam->plate_y);
-    const gfx_rect_t vf = gfx_rect(0, 0, SCREEN_W, py);
+    const gfx_rect_t vf = gfx_rect(0, 0, SCREEN_W, M6_PLATE_Y);
     if (cam->shot == SHOT_FLASH) {
         gfx_fill(c, vf, COLOR_BLACK, 255);
     } else if ((cam->shot == SHOT_HOLD || cam->shot == SHOT_REVEAL) && cam->frozen_w) {
-        const int h = cam->frozen_h > py ? py : cam->frozen_h;
+        const int h = cam->frozen_h > M6_PLATE_Y ? M6_PLATE_Y : cam->frozen_h;
         gfx_copy(c, cam->frozen, cam->frozen_w, h, cam->frozen_w, 0, 0);
         if (cam->shot == SHOT_REVEAL && cam->dev_ready) {
             const float t = cam_ease_in_out(cam_progress(app->now, cam->shot_t0, SHOT_REVEAL_MS));
@@ -823,27 +775,20 @@ static void render_m6(film_app_t *app, gfx_canvas_t *c)
     } else {
         cam_draw_live(app, c, vf);
     }
-    if (py >= M6_PLATE_Y - 2 && cam->shot != SHOT_FLASH) {
-        cam_draw_vf_overlay(app, c, gfx_rect(0, 0, SCREEN_W, M6_PLATE_Y), true);
-    } else if (py < M6_PLATE_Y - 2) {
-        const ui_frame_t f = ui_frame(vf, GFX_ROT_0);
-        draw_brightlines(c, &f, 22, 16, 436, py - 32);
+    if (cam->shot != SHOT_FLASH) {
+        cam_draw_vf_overlay(app, c, vf, true);
     }
     if (cam->shot == SHOT_HOLD || cam->shot == SHOT_REVEAL) {
-        draw_developing(app, c, gfx_rect(0, 0, SCREEN_W, M6_PLATE_Y));
+        draw_developing(app, c, vf);
     }
     if (cam->overlay == CAM_OVL_POPOVER) {
-        gfx_dim(c, gfx_rect(0, 0, SCREEN_W, M6_PLATE_Y), 184);
+        gfx_dim(c, vf, 184);
     } else if (cam->overlay == CAM_OVL_ROLLEND) {
-        gfx_dim(c, gfx_rect(0, 0, SCREEN_W, M6_PLATE_Y), 128);
+        gfx_dim(c, vf, 128);
     }
 
-    gfx_blit(c, &img_m6_plate180, 0, py, 255);
-    if (py > (M6_PLATE_Y + M6_DIAL_PLATE_Y) / 2) {
-        draw_m6_controls(app, c);
-    } else {
-        draw_m6_dial(app, c, py);
-    }
+    gfx_blit(c, &img_m6_plate180, 0, M6_PLATE_Y, 255);
+    draw_m6_controls(app, c);
     draw_m6_shot(app, c);
     if (cam->overlay == CAM_OVL_POPOVER) {
         cam_draw_popover(app, c, M6_WINDOW_X - POPOVER_CARET_DX);
@@ -865,56 +810,10 @@ static bool in_window(int x, int y)
                   y, 6);
 }
 
-static void dial_gesture(film_app_t *app, const gesture_t *g)
-{
-    cam_state_t *cam = &app->cam;
-    const int py = (int)lroundf(cam->plate_y);
-    switch (g->kind) {
-    case GEST_TAP:
-        if (g->y < py) {
-            cam_close(app);
-        } else if (g->y > py + 60 && g->y < py + 140) {
-            const int d = (int)lroundf((float)(g->x - 240) / DIAL_PITCH);
-            if (d) {
-                cam_select_film(app, app->settings.film + d);
-            }
-        }
-        break;
-    case GEST_DRAG_BEGIN:
-        if (g->y0 >= py && g->horizontal) {
-            cam->dial_dragging = true;
-            cam->dial_drag_pos = cam->film_pos;
-        }
-        break;
-    case GEST_DRAG:
-        if (cam->dial_dragging) {
-            cam->film_pos = cam->dial_drag_pos - (float)g->dx / DIAL_PITCH;
-            cam_select_film(app, (int)floorf(cam->film_pos + 0.5f));
-        }
-        break;
-    case GEST_DRAG_END: {
-        if (cam->dial_dragging) {
-            /* 甩动：按速度多走几格 */
-            const float fling = -g->vx / (DIAL_PITCH * 6.0f);
-            const float clamped = fling > 2.0f ? 2.0f : (fling < -2.0f ? -2.0f : fling);
-            cam_select_film(app, (int)floorf(cam->film_pos + clamped + 0.5f));
-        }
-        cam->dial_dragging = false;
-        break;
-    }
-    default:
-        break;
-    }
-}
-
 static void m6_gesture(film_app_t *app, const gesture_t *g)
 {
     cam_state_t *cam = &app->cam;
     if (cam_overlay_gesture(app, g, M6_WINDOW_X - POPOVER_CARET_DX)) {
-        return;
-    }
-    if (cam->overlay == CAM_OVL_DIAL) {
-        dial_gesture(app, g);
         return;
     }
     switch (g->kind) {
@@ -933,8 +832,8 @@ static void m6_gesture(film_app_t *app, const gesture_t *g)
         if (cam->shutter_down) {
             cam_fire(app);
         } else if (cam->window_down) {
-            cam_open(app, CAM_OVL_DIAL);
             app_feedback(app, FILM_FEEDBACK_CLICK);
+            app_open_film(app, SCR_CAMERA, app->settings.film);
         } else if (cam->counter_down) {
             app->album.selecting = false;
             app->album.scroll = 0;
@@ -960,7 +859,7 @@ static void m6_gesture(film_app_t *app, const gesture_t *g)
         break;
     case GEST_DRAG:
         if (cam->dragging_film) {
-            cam_select_film(app, cam->film_drag_start - g->du / FILM_SWIPE_PX);
+            app_select_film(app, cam->film_drag_start - g->du / FILM_SWIPE_PX);
         } else if (cam->dragging_ev) {
             cam_set_ev(app, cam->ev_drag_start - (float)g->dv / EV_PX_PER_STOP);
         }
@@ -985,9 +884,8 @@ static void camera_enter(film_app_t *app)
     if (cam->overlay != CAM_OVL_DEVELOPING && cam->overlay != CAM_OVL_ROLLEND) {
         cam->overlay = CAM_OVL_NONE;
     }
-    cam->plate_y = M6_PLATE_Y;
     cam->shutter_down = cam->window_down = cam->counter_down = false;
-    cam->dragging_ev = cam->dragging_film = cam->dial_dragging = false;
+    cam->dragging_ev = cam->dragging_film = false;
     cam->film_pos = (float)app->settings.film;
     cam_picker_reset(app);
     app_update_preview(app);
@@ -999,25 +897,13 @@ static bool camera_step(film_app_t *app, uint32_t dt)
     cam_state_t *cam = &app->cam;
     bool anim = false;
 
-    /* 滚筒追随选中的胶卷（拖拨盘时由手指直接带动） */
-    if (!cam->dial_dragging) {
-        const float d = film_delta(cam->film_pos, (float)app->settings.film);
-        if (fabsf(d) > 0.002f) {
-            const float k = fminf(1.0f, (float)dt / FILM_ANIM_MS);
-            cam->film_pos += d * k;
-            anim = true;
-        } else {
-            cam->film_pos = (float)app->settings.film;
-        }
-    }
-
-    /* 拨盘升降 */
-    const float plate_target = cam->overlay == CAM_OVL_DIAL ? M6_DIAL_PLATE_Y : M6_PLATE_Y;
-    if (fabsf(cam->plate_y - plate_target) > 0.5f) {
-        cam->plate_y += (plate_target - cam->plate_y) * fminf(1.0f, (float)dt / PLATE_ANIM_MS);
+    /* 胶卷窗里的胶卷名追随选中的胶卷 */
+    const float d = film_delta(cam->film_pos, (float)app->settings.film);
+    if (fabsf(d) > 0.002f) {
+        cam->film_pos += d * fminf(1.0f, (float)dt / FILM_ANIM_MS);
         anim = true;
     } else {
-        cam->plate_y = plate_target;
+        cam->film_pos = (float)app->settings.film;
     }
 
     /*
@@ -1121,7 +1007,7 @@ static void camera_gesture(film_app_t *app, const gesture_t *g)
 /**
  * 快门键（M6 与 SX-70 共用）：
  *   - 按下即拍，快门钮同时显示按下态，松开复位；
- *   - 拨盘、长按菜单、胶片盒抽屉、机身选择开着时，第一下只把它们收起回到取景；
+ *   - 长按菜单、机身选择开着时，第一下只把它们收起回到取景；
  *   - 一卷拍完、SX-70 显影中、M6 冲洗中、换机身动画中都不响应（触摸同样拍不了）。
  */
 static void camera_key(film_app_t *app, film_key_t key, bool pressed)
@@ -1143,9 +1029,7 @@ static void camera_key(film_app_t *app, film_key_t key, bool pressed)
     case CAM_OVL_PICKER:
         cam->picker_open = false;   /* 面板收完后 cam_picker_step 会关掉弹出层 */
         return;
-    case CAM_OVL_DIAL:
     case CAM_OVL_POPOVER:
-    case CAM_OVL_DRAWER:
         cam_close(app);
         app_feedback(app, FILM_FEEDBACK_CLICK);
         return;
@@ -1192,6 +1076,15 @@ static void camera_event(film_app_t *app, const film_event_t *ev)
     m6_event(app, ev);
 }
 
+/** 取景帧所在区域：M6 是铝板以上，SX-70 是机身中间的方框 */
+static gfx_rect_t camera_live_rect(const film_app_t *app)
+{
+    if (app->settings.instant) {
+        return gfx_rect(SX_VF_X, 0, FILM_VF_SX_W, FILM_VF_SX_H);
+    }
+    return gfx_rect(0, 0, SCREEN_W, M6_PLATE_Y);
+}
+
 const screen_ops_t g_screen_camera = {
     .enter = camera_enter,
     .leave = NULL,
@@ -1200,4 +1093,5 @@ const screen_ops_t g_screen_camera = {
     .gesture = camera_gesture,
     .event = camera_event,
     .key = camera_key,
+    .live_rect = camera_live_rect,
 };

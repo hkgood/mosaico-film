@@ -7,7 +7,6 @@
 
 /* M6 机身布局（屏幕坐标，取自 v3 样稿；底行左右两端收进下方圆角安全区） */
 #define M6_PLATE_Y        360
-#define M6_DIAL_PLATE_Y   300
 #define M6_COUNTER_X      92
 #define M6_COUNTER_Y      410
 #define M6_SHUTTER_X      240
@@ -29,7 +28,6 @@
 #define SX_SHUTTER_Y      426
 #define SX_PACK_X         396
 #define SX_PACK_Y         416
-#define SX_DRAWER_Y       318
 #define SX_PRINT_SIZE     CAM_STACK_PRINT_PX
 
 /* 弹出面板的位置（以样稿 M6 为准，SX-70 按胶片盒位置平移） */
@@ -46,7 +44,6 @@ float cam_progress(uint32_t now, uint32_t t0, uint32_t duration);
 /* 公共动作 */
 void cam_fire(film_app_t *app);
 void cam_set_ev(film_app_t *app, float ev);
-void cam_select_film(film_app_t *app, int film);
 void cam_open(film_app_t *app, cam_overlay_t overlay);
 void cam_close(film_app_t *app);
 void cam_toggle_instant(film_app_t *app);

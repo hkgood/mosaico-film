@@ -6,6 +6,8 @@ idf_component_register(
         "film_boot.c"
         "film_port_dev.c"
         "film_power.c"
+        "film_discharge.c"
+        "film_display.c"
         "film_camera.c"
         "film_still.c"
         "film_lab.c"
@@ -19,7 +21,7 @@ idf_component_register(
     REQUIRES esp_iris esp-mosaico-bsp esp_mosaico_app_recovery
         esp_mosaico_gsp_bundle esp_mosaico_gsp_iris freertos nvs_flash
         esp-gsp film_ui
-    PRIV_REQUIRES esp_timer esp_display_present esp_lcd esp_partition
+    PRIV_REQUIRES esp_timer esp_app_format esp_display_present esp_lcd esp_partition
         film_filter film_gfx film_assets film_darkroom
         mosaico_module_camera mosaico_module_mgr esp_driver_jpeg esp_driver_gpio esp_driver_spi esp_mm
         espressif__esp_video espressif__esp_cam_sensor espressif__esp_new_jpeg

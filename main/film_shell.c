@@ -61,6 +61,22 @@ static void invalidate(esp_gsp_handle_t ui, struct film_shell_t *s)
     s->dirty = esp_gsp_canvas_invalidate(ui, s->config.canvas_bind) != ESP_GSP_OK;
 }
 
+static bool is_full(gfx_rect_t r)
+{
+    return r.x <= 0 && r.y <= 0 && r.w >= FILM_APP_SCREEN_W && r.h >= FILM_APP_SCREEN_H;
+}
+
+/** 只送 rect 这块到屏幕；送不出去就记下 dirty，下一帧整屏重画重送 */
+static void invalidate_rect(esp_gsp_handle_t ui, struct film_shell_t *s, gfx_rect_t r)
+{
+    if (is_full(r)) {
+        invalidate(ui, s);
+        return;
+    }
+    const gsp_rect_t dirty = { .x1 = r.x, .y1 = r.y, .x2 = r.x + r.w, .y2 = r.y + r.h };
+    s->dirty = esp_gsp_canvas_invalidate_dirty(ui, s->config.canvas_bind, dirty) != ESP_GSP_OK;
+}
+
 static bool stats_enabled(const struct film_shell_t *s)
 {
     return s->config.now_us && s->config.report;
@@ -102,21 +118,26 @@ static void stats_tick(struct film_shell_t *s, uint32_t now)
     s->stats_max_us = 0;
 }
 
-static void shell_render(esp_gsp_handle_t ui, struct film_shell_t *s)
+/*
+ * s->frame 跨帧保留整屏画面：只换了取景帧时界面只重画取景框（铝板、机身等静态部分沿用上一帧），
+ * GSP 也只把这块送到屏幕。full 为 true 时（触摸、上次送屏失败）整屏重画。
+ */
+static void shell_render(esp_gsp_handle_t ui, struct film_shell_t *s, bool full)
 {
+    const gfx_rect_t rect = full ? gfx_rect(0, 0, FILM_APP_SCREEN_W, FILM_APP_SCREEN_H) : film_app_damage(s->app);
     gfx_canvas_t canvas = {
         .pixels = s->frame,
         .width = FILM_APP_SCREEN_W,
         .height = FILM_APP_SCREEN_H,
         .stride = FILM_APP_SCREEN_W,
-        .clip = { 0, 0, FILM_APP_SCREEN_W, FILM_APP_SCREEN_H },
+        .clip = rect,
     };
     const int64_t t0 = stats_enabled(s) ? s->config.now_us() : 0;
     film_app_render(s->app, &canvas);
     if (stats_enabled(s)) {
         stats_add(s, s->config.now_us() - t0);
     }
-    invalidate(ui, s);
+    invalidate_rect(ui, s, rect);
 }
 
 static esp_gsp_err_t create_app(struct film_shell_t *s, const film_port_t *port)
@@ -140,7 +161,7 @@ static void intro_tick(esp_gsp_handle_t ui, struct film_shell_t *s)
     }
     const film_port_t *port = intro->port(intro->ctx);
     if (port && create_app(s, port) == ESP_GSP_OK) {
-        shell_render(ui, s);
+        shell_render(ui, s, true);
     } else if (s->dirty) {
         invalidate(ui, s);
     }
@@ -161,6 +182,8 @@ static void drain_remote(struct film_shell_t *s)
     const unsigned tail = atomic_load_explicit(&s->remote_tail, memory_order_acquire);
     while (head != tail) {
         const remote_sample_t sample = s->remote[head % REMOTE_QUEUE_LEN];
+        /* 远程操作者看不到黑屏：直接唤醒，这一下照常生效 */
+        film_app_wake(s->app, s->config.now_ms());
         apply_pointer(s, sample.x, sample.y, sample.pressed);
         ++head;
     }
@@ -191,7 +214,7 @@ static void shell_tick(esp_gsp_handle_t ui, void *ctx)
     if (!s->app) {
         intro_tick(ui, s);
     } else if (film_app_step(s->app, s->config.now_ms()) || s->dirty) {
-        shell_render(ui, s);
+        shell_render(ui, s, s->dirty);
     }
     if (s->app && stats_enabled(s)) {
         stats_tick(s, s->config.now_ms());

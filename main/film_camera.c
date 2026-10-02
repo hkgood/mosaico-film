@@ -26,8 +26,14 @@ static const char *TAG = "film_camera";
 #define MODULE_SCAN_PERIOD_MS    (60 * 60 * 1000)   /*!< 实际上关闭周期探测，见 start_module_manager */
 #define HOLD_POLL_MS             30
 #define HOLD_WAIT_MS             1500     /*!< 暂停取景时最多等相机任务关流多久（一帧 + 关流） */
+/*
+ * 界面暂停取景超过这么久就关流（传感器与 CSI 停下）。短暂停顿（打开机身面板、进相册看一眼
+ * 就回来）不关，免得回到取景时等重新开流。
+ */
+#define PAUSE_STREAM_OFF_US      (3 * 1000 * 1000)
+#define PAUSED_POLL_MS           1000     /*!< 关流暂停期间的兜底唤醒（恢复时会被立即叫醒） */
 #define STATS_INTERVAL_US        (10 * 1000 * 1000)
-#define SLOT_COUNT               3        /*!< 一张界面在用、一张待取、一张正在写 */
+#define SLOT_COUNT               3        /*!< 一张界面在用、一张待取或正在写，一张给界面换帧的瞬间 */
 #define SLOT_PIXELS              (FILM_VF_M6_W * FILM_VF_M6_H)
 #define BUFFER_CAPS              (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 #define BUFFER_ALIGN             64
@@ -61,6 +67,7 @@ struct film_camera_t {
     /* 以下只在相机任务里使用 */
     mosaico_camera_handle_t camera;
     bool streaming;
+    int64_t paused_since;       /*!< 界面开始暂停取景的时刻，0 表示没暂停 */
     uint32_t stat_frames;
     int64_t stat_since;
     int64_t stat_convert_us;
@@ -68,11 +75,15 @@ struct film_camera_t {
 
 /* ---------------------------------------------------------------- 取景缓冲 */
 
+/**
+ * 找一个能写的槽。上一帧界面还没取走时返回 -1：界面重绘比相机慢，多转的帧没人看，
+ * 只白占 CPU。界面一取走就转下一帧，赶在下次重绘前出好。
+ */
 static int pick_write_slot(film_camera_handle_t cam)
 {
     int slot = -1;
     xSemaphoreTake(cam->lock, portMAX_DELAY);
-    for (int i = 0; i < SLOT_COUNT; ++i) {
+    for (int i = 0; i < SLOT_COUNT && cam->ready_slot < 0; ++i) {
         if (i != cam->ready_slot && !(cam->held_mask & (1u << i))) {
             slot = i;
             break;
@@ -150,8 +161,12 @@ void film_camera_hold_preview(film_camera_handle_t cam, bool hold)
 void film_camera_pause_preview(film_camera_handle_t cam, bool paused)
 {
     xSemaphoreTake(cam->lock, portMAX_DELAY);
+    const bool changed = cam->paused != paused;
     cam->paused = paused;
     xSemaphoreGive(cam->lock);
+    if (changed && !paused) {
+        xTaskNotifyGive(cam->task);   /* 流可能已经关了：叫醒相机任务立刻重开 */
+    }
 }
 
 esp_err_t film_camera_capture(film_camera_handle_t cam, const film_shot_t *shot)
@@ -381,6 +396,19 @@ static void camera_task(void *arg)
                 xSemaphoreGive(cam->stopped);
             }
             (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(HOLD_POLL_MS));
+            continue;
+        }
+        /* 界面暂停取景（离开取景页、屏幕调暗）：先只停转换，久了再关流 */
+        if (!paused) {
+            cam->paused_since = 0;
+        } else if (cam->paused_since == 0) {
+            cam->paused_since = esp_timer_get_time();
+        } else if (cam->streaming && esp_timer_get_time() - cam->paused_since >= PAUSE_STREAM_OFF_US) {
+            stream_stop(cam);
+            ESP_LOGI(TAG, "preview paused: stream off");
+        }
+        if (paused && !cam->streaming) {
+            (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(PAUSED_POLL_MS));
             continue;
         }
         if (!cam->streaming && stream_start(cam) != ESP_OK) {

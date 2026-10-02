@@ -28,6 +28,12 @@ typedef struct {
 esp_err_t film_feedback_create(const film_feedback_config_t *config, film_feedback_handle_t *ret_handle);
 void film_feedback_play(film_feedback_handle_t handle, film_feedback_t kind);
 
+/**
+ * 关屏时调用：关掉编解码器与 I2S 时钟省电（期间只有振动、没有声音）；false 时重新打开。
+ * 任意任务可调用；命令排在已投递的声音之后执行。队列满到等不及时返回 ESP_ERR_TIMEOUT。
+ */
+esp_err_t film_feedback_set_suspended(film_feedback_handle_t handle, bool suspended);
+
 #ifdef __cplusplus
 }
 #endif

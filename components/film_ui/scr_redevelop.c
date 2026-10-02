@@ -1,8 +1,9 @@
 /*
  * 暗房 · 重新冲洗：用另一卷胶卷（或换成宝丽来相纸）重新冲洗原片，结果另存为新照片，原片保留。
  *
- * 预览流程：进入时向平台要一张未冲洗的原片预览，然后每当滚筒停稳就要一张当前胶卷的冲洗预览。
- * 平台同一时间只处理一个请求，忙时下一帧重试。按住 HOLD · ORIGINAL 对比原片。
+ * 预览流程：进入时向平台要一张未冲洗的原片预览，然后每当胶卷行停稳就要一张当前胶卷的冲洗预览。
+ * 平台同一时间只处理一个请求，忙时下一帧重试。按住 ORIGINAL 对比原片。
+ * 胶卷行左右滑动换卷，点一下打开全屏胶卷页；从那里回来时保留预览与选择。
  */
 #include <math.h>
 #include <stdio.h>
@@ -12,20 +13,27 @@
 
 #define VIEW_H          300
 #define PLATE_Y         300
-/* 铝板从上到下：刻字 → 胶卷说明 → 指针 → 滚筒 → 底行（INSTANT 拨杆 | DEVELOP），底行收进下方圆弧以内 */
-#define PLATE_HEAD_Y    (PLATE_Y + 16)
-#define PLATE_TAG_Y     (PLATE_Y + 32)
-#define PLATE_MARK_Y    (PLATE_Y + 46)
-#define DRUM_Y          380
-#define DRUM_HALF_H     31
-#define DRUM_PITCH      120.0f
-#define DRUM_ANIM_MS    90.0f
+/* 铝板从上到下：胶卷行 → 底行（INSTANT 拨杆 | DEVELOP），底行收进下方圆弧以内 */
+#define ROW_RADIUS      14
+#define ROW_CAN_X       8       /*!< 胶卷行内（相对行左上角）：暗盒、名字、说明、右箭头 */
+#define ROW_CAN_Y       6
+#define ROW_TEXT_X      78
+#define ROW_NAME_V      33
+#define ROW_SUB_V       57
+#define ROW_CHEVRON_R   30      /*!< 右箭头中心离行右边缘 */
+#define ROW_BG_TOP      0x141413U
+#define ROW_BG_DOWN     0x1F1E1BU
+#define ROW_BG_BOTTOM   0x070707U
+#define ROW_SLIDE_PX    90      /*!< 换卷时行内容横移的距离（同时淡入淡出） */
+#define FILM_DRAG_PITCH 120.0f  /*!< 横向拖动多少像素换一卷 */
+#define FILM_ANIM_MS    90.0f
 #define SETTLE_MS       160
 #define BOTTOM_CY       436     /*!< 底行的竖直中心 */
 #define LEVER_X         150
 #define LEVER_LABEL_X   (LEVER_X - 50)  /*!< INSTANT 刻字中心（在拨杆左边，不压住拨杆） */
 
 static const gfx_rect_t s_hold = { 290, 24, 140, 32 };
+static const gfx_rect_t s_film_row = { 36, PLATE_Y + 14, 408, 82 };
 static const gfx_rect_t s_develop = { 296, BOTTOM_CY - 20, 136, 40 };
 static const gfx_rect_t s_lever_hit = { 56, BOTTOM_CY - 22, 124, 44 };
 
@@ -128,7 +136,7 @@ static void draw_view(film_app_t *app, gfx_canvas_t *c)
     } else if (!show_original) {
         blit_fit(c, r->result, r->res_w, r->res_h, view);
     }
-    /* 预览还没跟上滚筒时，用暗房状态卡明确反馈，避免小字沉到照片底部。 */
+    /* 预览还没跟上胶卷行时，用暗房状态卡明确反馈，避免小字沉到照片底部。 */
     const bool busy = !r->holding_original && (!result_matches(r) || r->request_in_flight);
     if (busy) {
         const float t = (float)(app->now % 1200) / 1200.0f;
@@ -139,7 +147,7 @@ static void draw_view(film_app_t *app, gfx_canvas_t *c)
         const gfx_text_style_t title =
             ui_style(&font_jost_m12, 12, 0.26f, COLOR_CREAM, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
         gfx_text(c, &title, 240, 222, "DEVELOPING");
-        const gfx_text_style_t sub = ui_cjk(&font_noto_11, COLOR_MUTED, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
+        const gfx_text_style_t sub = ui_cjk(&font_noto_12, COLOR_MUTED, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
         gfx_text(c, &sub, 240, 244, "正在生成新的胶片版本");
         gfx_fill_round(c, gfx_rect(140, 260, 200, 4), 2, 0xFFFAEC, 48);
         const int scan = (int)lroundf(t * 170.0f);
@@ -148,36 +156,50 @@ static void draw_view(film_app_t *app, gfx_canvas_t *c)
     }
     ui_top_shade(c, HEADER_H + 16, 153);
     ui_icon_button(c, HEADER_BACK_X, HEADER_BACK_Y, &img_icon_close, false);
-    const gfx_text_style_t title = ui_style(&font_jost_m12, 11.5f, 0.22f, COLOR_CREAM, 255, GFX_ALIGN_LEFT,
-                                            GFX_ROT_0);
+    const gfx_text_style_t title = ui_style(&font_jost_m12, 12, 0.22f, COLOR_CREAM, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
     gfx_text(c, &title, HEADER_TEXT_X, HEADER_TITLE_Y, "REDEVELOP");
-    const gfx_text_style_t sub = ui_cjk(&font_noto_11, COLOR_CREAM, 178, GFX_ALIGN_LEFT, GFX_ROT_0);
+    const gfx_text_style_t sub = ui_cjk(&font_noto_12, COLOR_CREAM, 178, GFX_ALIGN_LEFT, GFX_ROT_0);
     gfx_text(c, &sub, HEADER_TEXT_X, HEADER_SUB_Y, "另存为新照片，原片保留");
     gfx_fill_round(c, s_hold, 16, 0x0A0A09, r->hold_down ? 200 : 115);
-    ui_button_line(c, s_hold, "HOLD · ORIGINAL", NULL, r->hold_down, COLOR_CREAM, 89);
+    ui_button_line(c, s_hold, "ORIGINAL", NULL, r->hold_down, COLOR_CREAM, 89);
 }
 
-static void draw_drum(film_app_t *app, gfx_canvas_t *c)
+/** 胶卷行的一格内容：暗盒 + 名字 + 说明，横移 dx、透明度 alpha */
+static void draw_row_item(gfx_canvas_t *c, int film, int dx, uint8_t alpha)
 {
-    redev_state_t *r = &app->redev;
-    const int wy = DRUM_Y - DRUM_HALF_H;
-    ui_sprite(c, &img_win440_base, IMG_WIN440_BASE_OX, IMG_WIN440_BASE_OY, 20, wy, 255);
-    const gfx_rect_t inner = gfx_rect(33, wy, 414, 2 * DRUM_HALF_H);
-    const gfx_rect_t saved = gfx_clip_push(c, inner);
+    const gfx_rect_t row = s_film_row;
+    const film_info_t *info = film_info(film);
+    gfx_blit(c, info->canister_small, row.x + ROW_CAN_X + dx, row.y + ROW_CAN_Y, alpha);
+    const gfx_text_style_t name =
+        ui_style(&font_jost_m22, 22, 0.08f, 0xF6F1E4, alpha, GFX_ALIGN_LEFT, GFX_ROT_0);
+    gfx_text(c, &name, row.x + ROW_TEXT_X + dx, row.y + ROW_NAME_V, info->name);
+    char sub[40];
+    snprintf(sub, sizeof(sub), "%s  \xC2\xB7  TAP TO CHANGE", info->iso);
+    const gfx_text_style_t st =
+        ui_style(&font_jost_m11, UI_TEXT_LABEL, 0.2f, COLOR_MUTED, alpha, GFX_ALIGN_LEFT, GFX_ROT_0);
+    gfx_text(c, &st, row.x + ROW_TEXT_X + 1 + dx, row.y + ROW_SUB_V, sub);
+}
+
+/** 铝板上的胶卷行：深色圆角槽，换卷时内容横移淡入淡出 */
+static void draw_film_row(film_app_t *app, gfx_canvas_t *c)
+{
+    const redev_state_t *r = &app->redev;
+    const gfx_rect_t row = s_film_row;
+    ui_safe_check(row, ROW_RADIUS, "redevelop film row");
+    gfx_shadow(c, gfx_rect(row.x, row.y + 2, row.w, row.h), ROW_RADIUS, 4, COLOR_BLACK, 128);
+    gfx_gradient_v(c, row, ROW_RADIUS, r->row_down ? ROW_BG_DOWN : ROW_BG_TOP, 255, ROW_BG_BOTTOM, 255);
+    gfx_fill(c, gfx_rect(row.x + ROW_RADIUS, row.y, row.w - 2 * ROW_RADIUS, 1), COLOR_WHITE, 20);
+
+    const gfx_rect_t saved = gfx_clip_push(c, gfx_rect(row.x + 2, row.y + 2, row.w - 4, row.h - 4));
     const int base = (int)floorf(r->film_pos + 0.5f);
-    for (int k = -3; k <= 3; ++k) {
+    for (int k = -1; k <= 1; ++k) {
         const float d = (float)(base + k) - r->film_pos;
-        const bool sel = fabsf(d) < 0.5f;
-        const int x = 240 + (int)lroundf(d * DRUM_PITCH);
-        const float edge = fminf((float)(x - inner.x), (float)(inner.x + inner.w - x)) / 100.0f;
-        const float fade = edge < 0 ? 0 : (edge > 1 ? 1 : edge);
-        const gfx_text_style_t st = ui_style(sel ? &font_jost_m22 : &font_jost_m12, sel ? 22 : 12, 0.08f,
-                                             sel ? 0xF6F1E4 : COLOR_CREAM, (uint8_t)(fade * (sel ? 255.0f : 97.0f)),
-                                             GFX_ALIGN_CENTER, GFX_ROT_0);
-        gfx_text(c, &st, x, DRUM_Y, film_info(base + k)->name);
+        if (fabsf(d) < 1.0f) {
+            draw_row_item(c, base + k, (int)lroundf(d * ROW_SLIDE_PX), (uint8_t)lroundf((1.0f - fabsf(d)) * 255.0f));
+        }
     }
     gfx_clip_pop(c, saved);
-    ui_sprite(c, &img_win440_over, IMG_WIN440_OVER_OX, IMG_WIN440_OVER_OY, 20, wy, 255);
+    gfx_icon(c, &img_icon_back, row.x + row.w - ROW_CHEVRON_R, row.y + row.h / 2, GFX_ROT_180, COLOR_CREAM, 200);
 }
 
 static void redev_render(film_app_t *app, gfx_canvas_t *c)
@@ -185,14 +207,7 @@ static void redev_render(film_app_t *app, gfx_canvas_t *c)
     redev_state_t *r = &app->redev;
     draw_view(app, c);
     gfx_blit(c, &img_m6_plate180, 0, PLATE_Y, 255);
-    const film_info_t *info = film_info(r->target_film);
-    char head[32];
-    snprintf(head, sizeof(head), "FILM  ·  %s", info->iso);
-    ui_engrave(c, 240, PLATE_HEAD_Y, head, false, GFX_ROT_0);
-    const gfx_text_style_t tag = ui_style(&font_jost_r12, 12, 0.01f, COLOR_TAGLINE, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
-    gfx_text(c, &tag, 240, PLATE_TAG_Y, info->tagline);
-    ui_index_mark(c, 240, PLATE_MARK_Y, GFX_ROT_0);
-    draw_drum(app, c);
+    draw_film_row(app, c);
     ui_engrave(c, LEVER_LABEL_X, BOTTOM_CY + 4, "INSTANT", false, GFX_ROT_0);
     ui_lever(c, LEVER_X, BOTTOM_CY, r->instant);
     ui_button_dark(c, s_develop, "DEVELOP", false, !r->developing && source(app) != NULL);
@@ -243,10 +258,12 @@ static void redev_gesture(film_app_t *app, const gesture_t *g)
     case GEST_PRESS:
         r->hold_down = ui_hit(s_hold, g->x, g->y, 6);
         r->holding_original = r->hold_down;
+        r->row_down = ui_hit(s_film_row, g->x, g->y, 0);
         break;
     case GEST_RELEASE:
         r->hold_down = false;
         r->holding_original = false;
+        r->row_down = false;
         break;
     case GEST_TAP:
         if (ui_back_hit(g->x, g->y)) {
@@ -257,15 +274,15 @@ static void redev_gesture(film_app_t *app, const gesture_t *g)
             r->instant = !r->instant;
             r->settle_at = app->now;
             app_feedback(app, FILM_FEEDBACK_LEVER);
-        } else if (g->y > DRUM_Y - DRUM_HALF_H && g->y < DRUM_Y + DRUM_HALF_H) {
-            const int d = (int)lroundf((float)(g->x - 240) / DRUM_PITCH);
-            if (d) {
-                select_film(app, r->target_film + d);
-            }
+        } else if (ui_hit(s_film_row, g->x, g->y, 0)) {
+            app_feedback(app, FILM_FEEDBACK_CLICK);
+            r->picking_film = true;
+            app_open_film(app, SCR_REDEVELOP, r->target_film);
         }
         break;
     case GEST_DRAG_BEGIN:
         r->hold_down = r->holding_original;
+        r->row_down = false;
         if (g->horizontal && !r->holding_original) {
             r->dragging = true;
             r->drag_start_pos = r->film_pos;
@@ -273,13 +290,13 @@ static void redev_gesture(film_app_t *app, const gesture_t *g)
         break;
     case GEST_DRAG:
         if (r->dragging) {
-            r->film_pos = r->drag_start_pos - (float)g->dx / DRUM_PITCH;
+            r->film_pos = r->drag_start_pos - (float)g->dx / FILM_DRAG_PITCH;
             select_film(app, (int)floorf(r->film_pos + 0.5f));
         }
         break;
     case GEST_DRAG_END:
         if (r->dragging) {
-            const float fling = -g->vx / (DRUM_PITCH * 6.0f);
+            const float fling = -g->vx / (FILM_DRAG_PITCH * 6.0f);
             const float clamped = fling > 2.0f ? 2.0f : (fling < -2.0f ? -2.0f : fling);
             select_film(app, (int)floorf(r->film_pos + clamped + 0.5f));
         }
@@ -310,7 +327,7 @@ static bool redev_step(film_app_t *app, uint32_t dt)
             d += FILM_ID_COUNT;
         }
         if (fabsf(d) > 0.002f) {
-            r->film_pos += d * fminf(1.0f, (float)dt / DRUM_ANIM_MS);
+            r->film_pos += d * fminf(1.0f, (float)dt / FILM_ANIM_MS);
             anim = true;
         } else {
             r->film_pos = (float)r->target_film;
@@ -359,14 +376,29 @@ static void redev_event(film_app_t *app, const film_event_t *ev)
     }
 }
 
+void redevelop_set_film(film_app_t *app, int film)
+{
+    if (film_wrap(film) == app->redev.target_film) {
+        app_feedback(app, FILM_FEEDBACK_CLICK);
+        return;
+    }
+    select_film(app, film);
+}
+
 static void redev_enter(film_app_t *app)
 {
     redev_state_t *r = &app->redev;
+    r->holding_original = r->hold_down = r->row_down = r->dragging = false;
+    if (r->picking_film) {
+        /* 从全屏胶卷页回来：预览、拨杆与选择都保留，胶卷行从原来那卷滑到新选的卷 */
+        r->picking_film = false;
+        return;
+    }
     const film_photo_t *src = source(app);
     r->instant = src && (src->flags & FILM_PHOTO_INSTANT);
     r->target_film = src && src->film < FILM_ID_COUNT ? src->film : 0;
     r->film_pos = (float)r->target_film;
-    /* 滚筒停在原片胶卷上；拿到原片预览后再请求这卷胶卷的冲洗预览 */
+    /* 胶卷行停在原片胶卷上；拿到原片预览后再请求这卷胶卷的冲洗预览 */
     r->res_film = -1;
     r->res_instant = r->instant;
     r->res_w = r->res_h = 0;
@@ -374,7 +406,6 @@ static void redev_enter(film_app_t *app)
     r->orig_w = r->orig_h = 0;
     r->request_in_flight = false;
     r->developing = false;
-    r->holding_original = r->hold_down = r->dragging = false;
     r->settle_at = app->now;
 }
 

@@ -14,14 +14,21 @@
 
 static const film_info_t s_films[FILM_ID_COUNT] = {
     [FILM_ID_GOLD] = { "GOLD 200", "GOLD", "200", "ISO 200", "Warm highlights, creamy skin. Made for sunshine.",
-                       0xE8B21C },
-    [FILM_ID_PORTRA] = { "SOFT 400", "SOFT", "400", "ISO 400", "Low contrast and gentle pastel tones.", 0xD9774A },
-    [FILM_ID_GREEN] = { "VERDE 200", "VERDE", "200", "ISO 200", "Cool cyan shadows and fresh greens.", 0x2F9A6A },
-    [FILM_ID_CROSS] = { "CROSS X", "CROSS", "X", "ISO 100", "Cross-processed: yellow highs, blue lows.", 0xC2185B },
-    [FILM_ID_BW] = { "SILVER 400", "SILVER", "400", "ISO 400", "Deep blacks with bold grain.", 0x3A3A3A },
-    [FILM_ID_FADED] = { "FADED 77", "FADED", "77", "ISO 100", "Lifted blacks and a magenta-orange fade.", 0xB5651D },
-    [FILM_ID_NIGHT] = { "NIGHT 800T", "NIGHT", "800T", "ISO 800", "Tungsten balance with red halation.", 0x1E5AA8 },
-    [FILM_ID_PIXEL] = { "PIXEL 8BIT", "PIXEL", "8BIT", "8 BIT", "32-colour palette with light dithering.", 0x7B3FE4 },
+                       0xE8B21C, &img_can_gold, &img_can_gold_s },
+    [FILM_ID_PORTRA] = { "SOFT 400", "SOFT", "400", "ISO 400", "Low contrast and gentle pastel tones.", 0xD9774A,
+                         &img_can_soft, &img_can_soft_s },
+    [FILM_ID_GREEN] = { "VERDE 200", "VERDE", "200", "ISO 200", "Cool cyan shadows and fresh greens.", 0x2F9A6A,
+                        &img_can_verde, &img_can_verde_s },
+    [FILM_ID_CROSS] = { "CROSS X", "CROSS", "X", "ISO 100", "Cross-processed: yellow highs, blue lows.", 0xC2185B,
+                        &img_can_cross, &img_can_cross_s },
+    [FILM_ID_BW] = { "SILVER 400", "SILVER", "400", "ISO 400", "Deep blacks with bold grain.", 0x3A3A3A,
+                     &img_can_silver, &img_can_silver_s },
+    [FILM_ID_FADED] = { "FADED 77", "FADED", "77", "ISO 100", "Lifted blacks and a magenta-orange fade.", 0xB5651D,
+                        &img_can_faded, &img_can_faded_s },
+    [FILM_ID_NIGHT] = { "NIGHT 800T", "NIGHT", "800T", "ISO 800", "Tungsten balance with red halation.", 0x1E5AA8,
+                        &img_can_night, &img_can_night_s },
+    [FILM_ID_PIXEL] = { "PIXEL 8BIT", "PIXEL", "8BIT", "8 BIT", "32-colour palette with light dithering.", 0x7B3FE4,
+                        &img_can_pixel, &img_can_pixel_s },
 };
 
 int film_wrap(int film)
@@ -213,8 +220,8 @@ static void text_offset(gfx_canvas_t *c, gfx_text_style_t style, int x, int y, i
 
 void ui_engrave(gfx_canvas_t *c, int x, int y, const char *text, bool light, gfx_rot_t rot)
 {
-    const gfx_text_style_t st =
-        ui_style(&font_jost_m9, 9, 0.26f, light ? COLOR_ENGRAVE_LT : COLOR_ENGRAVE, 255, GFX_ALIGN_CENTER, rot);
+    const gfx_text_style_t st = ui_style(&font_jost_m11, UI_TEXT_LABEL, 0.22f,
+                                         light ? COLOR_ENGRAVE_LT : COLOR_ENGRAVE, 255, GFX_ALIGN_CENTER, rot);
     if (light) {
         text_offset(c, st, x, y, 0, -1, COLOR_BLACK, 178, text);
     } else {
@@ -243,7 +250,7 @@ void ui_glow_text(gfx_canvas_t *c, const gfx_font_t *core, const gfx_font_t *glo
 static void button_label(gfx_canvas_t *c, gfx_rect_t r, const char *label, const gfx_image_t *icon, uint32_t ink,
                          uint8_t alpha, bool engraved)
 {
-    const gfx_text_style_t st = ui_style(&font_jost_m11, 11, 0.24f, ink, alpha, GFX_ALIGN_LEFT, GFX_ROT_0);
+    const gfx_text_style_t st = ui_style(&font_jost_r16, UI_TEXT_BUTTON, 0.02f, ink, alpha, GFX_ALIGN_LEFT, GFX_ROT_0);
     const int text_w = label && *label ? gfx_text_width_q4(&st, label) / 16 : 0;
     const int icon_w = icon ? icon->width : 0;
     const int gap = icon && text_w ? 8 : 0;
@@ -297,8 +304,8 @@ void ui_button_dark(gfx_canvas_t *c, gfx_rect_t r, const char *label, bool press
     gfx_stroke_round(c, gfx_rect(r.x - 1, r.y - 1, r.w + 2, r.h + 2), BUTTON_RADIUS + 1, 1, 0x050505, 255);
     gfx_gradient_v(c, r, BUTTON_RADIUS, pressed ? 0x1C1C1A : 0x2C2C2A, 255, 0x0C0C0B, 255);
     gfx_fill(c, gfx_rect(r.x + BUTTON_RADIUS, r.y, r.w - 2 * BUTTON_RADIUS, 1), COLOR_WHITE, 36);
-    const gfx_text_style_t st =
-        ui_style(&font_jost_m11, 10.5f, 0.22f, COLOR_CREAM, enabled ? 255 : 100, GFX_ALIGN_CENTER, GFX_ROT_0);
+    const gfx_text_style_t st = ui_style(&font_jost_r16, UI_TEXT_BUTTON, 0.02f, COLOR_CREAM, enabled ? 255 : 100,
+                                         GFX_ALIGN_CENTER, GFX_ROT_0);
     gfx_text(c, &st, r.x + r.w / 2, r.y + r.h / 2, label);
 }
 
@@ -384,10 +391,12 @@ void ui_header(gfx_canvas_t *c, const char *title, const char *sub, const char *
     ui_icon_button(c, HEADER_BACK_X, HEADER_BACK_Y, &img_icon_back, back_pressed);
     const gfx_text_style_t t = ui_style(&font_jost_m12, 12, 0.22f, COLOR_CREAM, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
     gfx_text(c, &t, HEADER_TEXT_X, HEADER_TITLE_Y, title);
-    const gfx_text_style_t s = ui_style(&font_jost_m9, 8.5f, 0.26f, COLOR_MUTED, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
+    const gfx_text_style_t s =
+        ui_style(&font_jost_m10, UI_TEXT_CAPTION, 0.22f, COLOR_MUTED, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
     gfx_text(c, &s, HEADER_TEXT_X, HEADER_SUB_Y, sub);
     if (right && *right) {
-        const gfx_text_style_t r = ui_style(&font_jost_m10, 10, 0.22f, COLOR_CREAM, 255, GFX_ALIGN_RIGHT, GFX_ROT_0);
+        const gfx_text_style_t r =
+            ui_style(&font_jost_m14, UI_TEXT_LINK, 0.12f, COLOR_CREAM, 255, GFX_ALIGN_RIGHT, GFX_ROT_0);
         gfx_text(c, &r, HEADER_RIGHT_X, HEADER_RIGHT_Y, right);
     }
 }
@@ -419,7 +428,7 @@ void ui_delete_confirm(gfx_canvas_t *c, const char *question)
     gfx_stroke_round(c, card, 14, 1, COLOR_WHITE, 30);
     const gfx_text_style_t q = ui_cjk(&font_noto_13, COLOR_CREAM, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
     gfx_text(c, &q, SCREEN_W / 2, card.y + 42, question);
-    const gfx_text_style_t s = ui_cjk(&font_noto_11, COLOR_MUTED, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
+    const gfx_text_style_t s = ui_cjk(&font_noto_12, COLOR_MUTED, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
     gfx_text(c, &s, SCREEN_W / 2, card.y + 66, "原片与成片都会删除，无法恢复");
     ui_button_line(c, s_confirm_cancel, "CANCEL", NULL, false, COLOR_CREAM, 71);
     ui_button_line(c, s_confirm_delete, "DELETE", NULL, false, COLOR_LED, 160);

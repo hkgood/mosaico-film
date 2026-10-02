@@ -23,6 +23,10 @@ static const char *TAG = "film_feedback";
 #define TASK_STACK      4096
 #define TASK_PRIORITY   6
 #define SOUND_COUNT     (FILM_FEEDBACK_BOOT + 1)
+/* 请求队列里的项：小于 SOUND_COUNT 是要播的声音，下面两个是内部命令 */
+#define REQ_SUSPEND     0xF0u
+#define REQ_RESUME      0xF1u
+#define CONTROL_WAIT_MS 50      /*!< 投递暂停/恢复命令最多等这么久（队列被声音塞满时） */
 #define TWO_PI_F        6.28318531f
 #define PI_F            3.14159265f
 
@@ -62,9 +66,11 @@ static const haptic_pattern_t k_patterns[SOUND_COUNT] = {
     [FILM_FEEDBACK_BOOT] = PATTERN(k_boot),
 };
 
-/* 片段、混音声部与马达状态归混音任务独占；其他任务只往 requests 投递 */
+/* 片段、混音声部、喇叭开关与马达状态归混音任务独占；其他任务只往 requests 投递 */
 struct film_feedback_t {
     esp_codec_dev_handle_t speaker;
+    bool speaker_open;  /*!< 关屏时关掉编解码器和 I2S 时钟，醒来再打开 */
+    uint8_t volume;
     QueueHandle_t requests;
     bool motor_ready;
     clip_t clips[SOUND_COUNT];
@@ -215,7 +221,7 @@ static void start(film_feedback_handle_t h, film_feedback_t kind)
     if ((int)kind < 0 || kind >= SOUND_COUNT) {
         return;
     }
-    if (h->clips[kind].samples) {
+    if (h->speaker_open && h->clips[kind].samples) {
         voice_t *slot = &h->voices[0];
         for (int i = 0; i < VOICES; ++i) {
             if (!h->voices[i].clip) {
@@ -282,20 +288,59 @@ static void mix_chunk(film_feedback_handle_t h)
     }
 }
 
+static esp_err_t speaker_open(film_feedback_handle_t h)
+{
+    esp_codec_dev_sample_info_t info = { .sample_rate = SAMPLE_RATE, .bits_per_sample = 16, .channel = 1 };
+    if (esp_codec_dev_open(h->speaker, &info) != ESP_CODEC_DEV_OK) {
+        return ESP_FAIL;
+    }
+    (void)esp_codec_dev_set_out_vol(h->speaker, h->volume);
+    h->speaker_open = true;
+    return ESP_OK;
+}
+
+/** 关屏时关掉喇叭（编解码器 + I2S），醒来再打开；打开失败就保持静音，下次恢复再试 */
+static void set_speaker(film_feedback_handle_t h, bool open)
+{
+    if (!h->speaker || h->speaker_open == open) {
+        return;
+    }
+    if (open) {
+        if (speaker_open(h) != ESP_OK) {
+            ESP_LOGW(TAG, "speaker reopen failed");
+        }
+        return;
+    }
+    for (int i = 0; i < VOICES; ++i) {
+        h->voices[i].clip = NULL;
+    }
+    (void)esp_codec_dev_close(h->speaker);
+    h->speaker_open = false;
+}
+
+static void handle_request(film_feedback_handle_t h, uint8_t req)
+{
+    if (req == REQ_SUSPEND || req == REQ_RESUME) {
+        set_speaker(h, req == REQ_RESUME);
+    } else {
+        start(h, (film_feedback_t)req);
+    }
+}
+
 static void mixer_task(void *arg)
 {
     film_feedback_handle_t h = arg;
     for (;;) {
-        film_feedback_t kind;
+        uint8_t req;
         /* 没有声音和振动时一直睡到下一个请求 */
         const TickType_t wait = (voices_active(h) || h->haptic) ? 0 : portMAX_DELAY;
-        while (xQueueReceive(h->requests, &kind, wait) == pdTRUE) {
-            start(h, kind);
+        while (xQueueReceive(h->requests, &req, wait) == pdTRUE) {
+            handle_request(h, req);
             if (wait == portMAX_DELAY) {
                 break;
             }
         }
-        if (h->speaker && voices_active(h)) {
+        if (h->speaker_open && voices_active(h)) {
             mix_chunk(h);
             if (esp_codec_dev_write(h->speaker, h->chunk, sizeof(h->chunk)) != ESP_CODEC_DEV_OK) {
                 vTaskDelay(pdMS_TO_TICKS(CHUNK_US / 1000));
@@ -309,7 +354,7 @@ static void mixer_task(void *arg)
 
 /* ---------------------------------------------------------------- 创建 */
 
-static esp_err_t open_speaker(film_feedback_handle_t h, uint8_t volume)
+static esp_err_t open_speaker(film_feedback_handle_t h)
 {
     i2s_std_config_t i2s = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
@@ -326,12 +371,10 @@ static esp_err_t open_speaker(film_feedback_handle_t h, uint8_t volume)
     ESP_RETURN_ON_ERROR(bsp_audio_init(&i2s), TAG, "I2S init");
     h->speaker = bsp_audio_codec_speaker_init();
     ESP_RETURN_ON_FALSE(h->speaker, ESP_FAIL, TAG, "speaker codec unavailable");
-    esp_codec_dev_sample_info_t info = { .sample_rate = SAMPLE_RATE, .bits_per_sample = 16, .channel = 1 };
-    if (esp_codec_dev_open(h->speaker, &info) != ESP_CODEC_DEV_OK) {
+    if (speaker_open(h) != ESP_OK) {
         h->speaker = NULL;
         return ESP_FAIL;
     }
-    (void)esp_codec_dev_set_out_vol(h->speaker, volume);
     return ESP_OK;
 }
 
@@ -348,7 +391,8 @@ esp_err_t film_feedback_create(const film_feedback_config_t *config, film_feedba
             synthesize((film_feedback_t)kind, c);
         }
     }
-    const esp_err_t speaker = open_speaker(h, config->volume_percent > 100 ? 100 : config->volume_percent);
+    h->volume = config->volume_percent > 100 ? 100 : config->volume_percent;
+    const esp_err_t speaker = open_speaker(h);
     if (speaker != ESP_OK) {
         ESP_LOGW(TAG, "speaker unavailable: %s", esp_err_to_name(speaker));
     }
@@ -356,7 +400,7 @@ esp_err_t film_feedback_create(const film_feedback_config_t *config, film_feedba
     if (!h->motor_ready) {
         ESP_LOGW(TAG, "motor unavailable");
     }
-    h->requests = xQueueCreate(REQUEST_QUEUE, sizeof(film_feedback_t));
+    h->requests = xQueueCreate(REQUEST_QUEUE, sizeof(uint8_t));
     if (!h->requests || xTaskCreatePinnedToCore(mixer_task, "film_fb", TASK_STACK, h, TASK_PRIORITY, NULL,
                                                 config->core) != pdPASS) {
         if (h->requests) {
@@ -374,7 +418,15 @@ esp_err_t film_feedback_create(const film_feedback_config_t *config, film_feedba
 
 void film_feedback_play(film_feedback_handle_t handle, film_feedback_t kind)
 {
-    if (handle) {
-        (void)xQueueSend(handle->requests, &kind, 0);
+    if (handle && (int)kind >= 0 && kind < SOUND_COUNT) {
+        const uint8_t req = (uint8_t)kind;
+        (void)xQueueSend(handle->requests, &req, 0);
     }
+}
+
+esp_err_t film_feedback_set_suspended(film_feedback_handle_t handle, bool suspended)
+{
+    ESP_RETURN_ON_FALSE(handle, ESP_ERR_INVALID_ARG, TAG, "no handle");
+    const uint8_t req = suspended ? REQ_SUSPEND : REQ_RESUME;
+    return xQueueSend(handle->requests, &req, pdMS_TO_TICKS(CONTROL_WAIT_MS)) == pdTRUE ? ESP_OK : ESP_ERR_TIMEOUT;
 }

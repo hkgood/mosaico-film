@@ -123,6 +123,16 @@ static void snap(script_t *s, const char *name)
     printf("snap %s\n", path);
 }
 
+/** 全屏胶卷页：点 film 那张卡片（按当前滚动位置算出卡片中心） */
+static void tap_film_card(script_t *s, int film)
+{
+    CHECK(s->app->screen == SCR_FILM);
+    const int x = 18 + (film % 3) * 151 + 71;
+    const int y = HEADER_H + 12 + (film / 3) * 178 - (int)s->app->film.scroll + 60;
+    CHECK(y > HEADER_H && y < FILM_APP_SCREEN_H);
+    tap(s, x, y);
+}
+
 /** 模拟转动相机：PC 平台每 500 ms 读一次数据目录里的 accel 文件，横竖切换还要稳定 350 ms */
 static void set_gravity(script_t *s, float x, float y)
 {
@@ -206,7 +216,7 @@ int main(int argc, char **argv)
     const int start = count_photos(root);
     CHECK(start == 0);   /* 脚本要求空相册 */
 
-    /* M6：取景、换胶卷、调曝光、拨盘、拍照 */
+    /* M6：取景、换胶卷、调曝光、全屏胶卷页、拍照 */
     wait_ms(&s, 600);
     snap(&s, "m6_viewfinder");
     drag(&s, 360, 180, 160, 180, 300);
@@ -215,14 +225,21 @@ int main(int argc, char **argv)
     snap(&s, "m6_ev_up");
     tap(&s, 240, 180);
     tap(&s, 240, 180);   /* 双击回到 EV 0 由两次快速轻点触发；这里只确认不会误触快门 */
-    tap(&s, 378, 410);   /* 胶卷窗 */
+    tap(&s, 378, 410);   /* 胶卷窗 → 全屏胶卷页 */
+    CHECK(s.app->screen == SCR_FILM && s.app->film.return_to == SCR_CAMERA && s.app->preview_paused);
+    CHECK(s.app->film.current == s.app->settings.film);
+    snap(&s, "film_page_m6");
+    drag(&s, 240, 400, 240, 160, 300);
+    CHECK(s.app->film.scroll > 0);
+    snap(&s, "film_page_scrolled");
+    const int film_before = s.app->settings.film;
+    tap(&s, 60, 40);     /* 返回键：不换卷 */
+    CHECK(s.app->screen == SCR_CAMERA && s.app->settings.film == film_before);
+    tap(&s, 378, 410);
+    tap_film_card(&s, FILM_ID_GREEN);
+    CHECK(s.app->screen == SCR_CAMERA && s.app->settings.film == FILM_ID_GREEN && !s.app->preview_paused);
     wait_ms(&s, 400);
-    snap(&s, "m6_dial_open");
-    tap(&s, 360, 400);   /* 拨盘右边一格 */
-    wait_ms(&s, 300);
-    snap(&s, "m6_dial_next");
-    tap(&s, 240, 100);   /* 点取景区收起拨盘 */
-    wait_ms(&s, 400);
+    snap(&s, "m6_film_picked");
     touch(&s, 240, 414, true);
     touch(&s, 240, 414, false);
     wait_ms(&s, 150);
@@ -291,11 +308,14 @@ int main(int argc, char **argv)
     set_gravity(&s, 0.0f, 1.0f);
     drag(&s, 330, 180, 130, 180, 300);
     snap(&s, "sx_swipe_film");
-    tap(&s, 396, 416);              /* 胶片盒 → 换胶片抽屉 */
+    tap(&s, 396, 416);              /* 胶片盒 → 全屏胶卷页（与 M6 同一个样式） */
+    CHECK(s.app->screen == SCR_FILM && s.app->film.return_to == SCR_CAMERA);
+    snap(&s, "film_page_sx");
+    drag(&s, 240, 400, 240, 160, 300);  /* 最后一行要先往上滚 */
+    tap_film_card(&s, FILM_ID_NIGHT);
+    CHECK(s.app->screen == SCR_CAMERA && s.app->settings.film == FILM_ID_NIGHT && s.app->settings.instant);
     wait_ms(&s, 400);
-    snap(&s, "sx_drawer");
-    tap(&s, 240, 200);              /* 点抽屉上方收起 */
-    wait_ms(&s, 400);
+    snap(&s, "sx_film_picked");
     tap(&s, 240, 426);
     wait_ms(&s, 600);
     snap(&s, "sx_developing");      /* 相纸吐出，小样在雾层下，进度条 + 百分比 */
@@ -328,9 +348,21 @@ int main(int argc, char **argv)
     tap(&s, 164, 422);              /* REDEVELOP */
     wait_ms(&s, 3000);
     snap(&s, "redevelop");
-    drag(&s, 360, 380, 240, 380, 300);
+    const int redev_film = s.app->redev.target_film;
+    drag(&s, 360, 355, 240, 355, 300);  /* 胶卷行左右滑仍能换卷 */
+    CHECK(s.app->redev.target_film != redev_film);
     wait_ms(&s, 2500);
     snap(&s, "redevelop_other_film");
+    tap(&s, 240, 355);                  /* 点胶卷行 → 全屏胶卷页 */
+    CHECK(s.app->screen == SCR_FILM && s.app->film.return_to == SCR_REDEVELOP);
+    snap(&s, "film_page_redevelop");
+    CHECK(s.app->film.current == s.app->redev.target_film && s.app->redev.target_film != FILM_ID_CROSS);
+    drag(&s, 240, 400, 240, 160, 300);
+    tap_film_card(&s, FILM_ID_CROSS);
+    CHECK(s.app->screen == SCR_REDEVELOP && s.app->redev.target_film == FILM_ID_CROSS);
+    CHECK(s.app->redev.orig_ready);     /* 回来时原片预览保留，不重新进入 */
+    wait_ms(&s, 2500);
+    snap(&s, "redevelop_picked");
     tap(&s, 364, 436);              /* DEVELOP */
     wait_photos(&s, 3, 15000);
     wait_ms(&s, 1200);
@@ -385,29 +417,27 @@ int main(int argc, char **argv)
     wait_ms(&s, 600);
     CHECK(s.app->cam.overlay == CAM_OVL_NONE);
 
-    /* 弹层开着时第一下只收起，不拍照：SX-70 抽屉、机身选择 */
+    /* 胶卷页、弹层开着时第一下只回到取景，不拍照：SX-70 胶卷页、机身选择 */
     tap(&s, 396, 416);
-    wait_ms(&s, 400);
-    CHECK(s.app->cam.overlay == CAM_OVL_DRAWER);
+    CHECK(s.app->screen == SCR_FILM);
     key_click(&s);
-    CHECK(s.app->cam.overlay == CAM_OVL_NONE && s.app->cam.shot == SHOT_IDLE);
-    snap(&s, "key_closed_drawer");
+    CHECK(s.app->screen == SCR_CAMERA && s.app->cam.overlay == CAM_OVL_NONE && s.app->cam.shot == SHOT_IDLE);
+    snap(&s, "key_closed_film_page");
     drag(&s, 240, 8, 240, 280, 300);
     CHECK(s.app->cam.overlay == CAM_OVL_PICKER);
     key_click(&s);
     wait_ms(&s, 600);
     CHECK(s.app->cam.overlay == CAM_OVL_NONE && s.app->cam.shot == SHOT_IDLE && s.app->settings.instant);
 
-    /* 换回 M6：拨盘开着先收起；之后按键拍一张 */
+    /* 换回 M6：胶卷页开着先回取景；之后按键拍一张 */
     drag(&s, 240, 8, 240, 280, 300);
     tap(&s, 128, 162);
     wait_ms(&s, 1200);
     CHECK(!s.app->settings.instant);
     tap(&s, 378, 410);
-    wait_ms(&s, 400);
-    CHECK(s.app->cam.overlay == CAM_OVL_DIAL);
+    CHECK(s.app->screen == SCR_FILM);
     key_click(&s);
-    CHECK(s.app->cam.overlay == CAM_OVL_NONE && s.app->cam.shot == SHOT_IDLE);
+    CHECK(s.app->screen == SCR_CAMERA && s.app->cam.shot == SHOT_IDLE);
     wait_ms(&s, 400);
     key(&s, true);
     CHECK(s.app->cam.shot != SHOT_IDLE);

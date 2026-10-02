@@ -9,6 +9,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "film_camera.h"
+#include "film_display.h"
 #include "film_lab.h"
 #include "film_power.h"
 #include "film_share.h"
@@ -36,6 +37,8 @@ static const char *TAG = "film_port";
  */
 #define POWER_PRIORITY      (CAMERA_PRIORITY + 1)
 #define POWER_PERIOD_MS     15000
+#define DISPLAY_CORE        0
+#define DISPLAY_PRIORITY    (CAMERA_PRIORITY + 1)   /*!< 只在休眠/唤醒时醒来，别让取景转换拖慢亮屏 */
 #define SETTINGS_NAMESPACE  "film"
 #define SETTINGS_KEY        "settings"
 #define ACCEL_MIN_PERIOD_US (40 * 1000) /*!< 25 Hz：摇一摇峰间隔 ≥110 ms，足够；也减轻共享 I2C 总线负担 */
@@ -60,6 +63,7 @@ struct film_port_dev_t {
     film_camera_handle_t camera;
     film_lab_handle_t lab;
     film_power_handle_t power;  /*!< NULL 表示读不到电量（界面隐藏电量指示） */
+    film_display_handle_t display;  /*!< NULL 表示亮度固定（休眠时只显示黑画面） */
     const char *root;
     bool imu_ready;
     bool accel_logged;          /*!< 首个有效读数已打日志（用于核对轴向） */
@@ -280,6 +284,21 @@ static bool dev_read_battery(void *ctx, film_battery_t *ret_battery)
     return film_power_get(p->power, ret_battery);
 }
 
+/* ---------------------------------------------------------------- 屏幕休眠 */
+
+static void dev_set_display(void *ctx, film_display_t state)
+{
+    film_port_dev_handle_t p = ctx;
+    film_display_set(p->display, state);
+    film_power_set_display(p->power, state);
+}
+
+static bool dev_keep_awake(void *ctx)
+{
+    film_port_dev_handle_t p = ctx;
+    return film_lab_working(p->lab);
+}
+
 /* ---------------------------------------------------------------- 创建 */
 
 static void start_imu(film_port_dev_handle_t p)
@@ -340,6 +359,13 @@ esp_err_t film_port_dev_create(const film_port_dev_config_t *config, film_port_d
         p->power = NULL;
         ESP_LOGW(TAG, "battery monitor unavailable");
     }
+    const film_display_config_t display = {
+        .gsp = config->gsp, .feedback = config->feedback, .core = DISPLAY_CORE, .priority = DISPLAY_PRIORITY,
+    };
+    if (film_display_start(&display, &p->display) != ESP_OK) {
+        p->display = NULL;
+        ESP_LOGW(TAG, "display power control unavailable");
+    }
 
     p->table = (film_port_t){
         .ctx = p,
@@ -362,6 +388,8 @@ esp_err_t film_port_dev_create(const film_port_dev_config_t *config, film_port_d
         .read_accel = dev_read_accel,
         .wall_time = dev_wall_time,
         .read_battery = dev_read_battery,
+        .set_display = dev_set_display,
+        .keep_awake = dev_keep_awake,
     };
     *ret_handle = p;
     return ESP_OK;

@@ -13,8 +13,6 @@
 #define ROW_PITCH       (CELL_H + 3)
 #define SELECT_BAR_Y    (BOTTOM_ROW_Y - 14)
 #define SELECT_COUNT_Y  (BOTTOM_ROW_Y + BOTTOM_ROW_H / 2)
-#define FRICTION        0.0045f   /*!< 惯性衰减（每毫秒） */
-#define MIN_VELOCITY    20.0f
 
 static const int s_col_x[3] = { 0, 161, 322 };
 /* 多选底栏：右侧发送按钮与大图页的 SEND TO PHONE 同宽同位，删除按钮紧挨在它左边 */
@@ -158,7 +156,7 @@ static void album_render(film_app_t *app, gfx_canvas_t *c)
             ui_style(&font_jost_m14, 14, 0.24f, app->storage_ok ? COLOR_CREAM : COLOR_LED, 255, GFX_ALIGN_CENTER,
                      GFX_ROT_0);
         gfx_text(c, &title, 240, 288, app->storage_ok ? "NO FRAMES YET" : "STORAGE OFFLINE");
-        const gfx_text_style_t sub = ui_cjk(&font_noto_11, COLOR_MUTED, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
+        const gfx_text_style_t sub = ui_cjk(&font_noto_12, COLOR_MUTED, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
         gfx_text(c, &sub, 240, 316,
                  app->storage_ok ? "按下快门，拍摄这一卷的第一张照片" : "存储不可用，暂时无法读取相册");
     }
@@ -170,7 +168,7 @@ static void album_render(film_app_t *app, gfx_canvas_t *c)
         gfx_fill(c, gfx_rect(0, SELECT_BAR_Y, SCREEN_W, 1), COLOR_WHITE, 20);
         char count[24];
         snprintf(count, sizeof(count), "%u SELECTED", (unsigned)a->n_selected);
-        const gfx_text_style_t st = ui_style(&font_jost_m11, 10.5f, 0.22f, COLOR_CREAM, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
+        const gfx_text_style_t st = ui_style(&font_jost_m12, 12, 0.2f, COLOR_CREAM, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
         gfx_text(c, &st, BOTTOM_ROW_LEFT + 4, SELECT_COUNT_Y, count);
         /* 一张没选时删除按钮变灰，点了也没反应 */
         const bool any = a->n_selected > 0;
@@ -191,12 +189,12 @@ static void album_render(film_app_t *app, gfx_canvas_t *c)
 static bool album_step(film_app_t *app, uint32_t dt)
 {
     album_state_t *a = &app->album;
-    if (a->dragging || fabsf(a->velocity) < MIN_VELOCITY) {
+    if (a->dragging || fabsf(a->velocity) < SCROLL_MIN_VELOCITY) {
         a->velocity = a->dragging ? a->velocity : 0.0f;
         return false;
     }
     a->scroll += a->velocity * (float)dt / 1000.0f;
-    a->velocity *= expf(-FRICTION * (float)dt);
+    a->velocity *= expf(-SCROLL_FRICTION * (float)dt);
     const float max = max_scroll(app);
     if (a->scroll < 0) {
         a->scroll = 0;

@@ -682,6 +682,11 @@ bool film_lab_busy(film_lab_handle_t lab)
     return busy;
 }
 
+bool film_lab_working(film_lab_handle_t lab)
+{
+    return film_lab_busy(lab) || !film_writer_wait_idle(lab->writer, 0);
+}
+
 esp_err_t film_lab_reserve(film_lab_handle_t lab)
 {
     esp_err_t err = ESP_OK;

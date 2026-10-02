@@ -144,6 +144,13 @@ typedef struct {
     bool charging;
 } film_battery_t;
 
+/** 屏幕状态：界面按无操作时长逐级降低，任一交互回到 ON */
+typedef enum {
+    FILM_DISPLAY_ON = 0,    /*!< 正常亮度 */
+    FILM_DISPLAY_DIM,       /*!< 调暗，取景已停 */
+    FILM_DISPLAY_OFF,       /*!< 关屏（画面为黑），声音可以关掉 */
+} film_display_t;
+
 typedef struct {
     void *ctx;
 
@@ -154,8 +161,9 @@ typedef struct {
     /** 取景是否在运行（相机缺失时为 false，界面显示提示） */
     bool (*camera_ready)(void *ctx);
     /**
-     * 界面暂时不需要新的取景帧（机身选择面板盖住取景时）：平台可以停掉帧转换省 CPU，
-     * 但要保持取景流，恢复后尽快出下一帧。可为 NULL。
+     * 界面暂时不需要新的取景帧（离开取景页、机身选择面板盖住取景、屏幕调暗或关闭时）：
+     * 平台应立刻停掉帧转换省 CPU；暂停持续几秒后还可以关掉取景流，恢复时重新开流
+     * （第一帧会晚零点几秒，界面期间一直显示手里那一帧）。可为 NULL。
      */
     void (*preview_pause)(void *ctx, bool paused);
 
@@ -186,6 +194,14 @@ typedef struct {
     bool (*wall_time)(void *ctx, int64_t *ret_time);
     /** 最近一次电量读数（平台自己低频刷新并缓存，这里只取缓存），读不到返回 false。可为 NULL */
     bool (*read_battery)(void *ctx, film_battery_t *ret_battery);
+
+    /**
+     * 屏幕状态变化（创建界面时先以 ON 调用一次）：平台据此调亮度、关音频等，必须立即返回。
+     * 可为 NULL。
+     */
+    void (*set_display)(void *ctx, film_display_t state);
+    /** 平台还有不应被休眠打断的后台工作（冲洗、写盘等）时返回 true，界面就不调暗。可为 NULL */
+    bool (*keep_awake)(void *ctx);
 } film_port_t;
 
 #ifdef __cplusplus

@@ -47,8 +47,29 @@ void film_app_key(film_app_handle_t handle, film_key_t key, bool pressed, uint32
 /** 推进一帧：处理平台事件、传感器与动画。返回 true 表示画面有变化需要重绘 */
 bool film_app_step(film_app_handle_t handle, uint32_t now_ms);
 
-/** 把当前画面完整绘制到画布（尺寸必须为 480×480） */
+/**
+ * 把当前画面绘制到画布（尺寸必须为 480×480），只画 canvas->clip 以内；关屏状态下画成全黑。
+ * 画布是跨帧保留的整屏画面时，可以只重画 film_app_damage 那块。
+ */
 void film_app_render(film_app_handle_t handle, gfx_canvas_t *canvas);
+
+/**
+ * 上一次 film_app_step 返回 true 时，相对上一帧变了的区域：通常是整屏；
+ * 只换了取景帧时只是取景框（取景页上占大部分时间）。调用方把 clip 设成它再 render，并只送这块到屏幕。
+ */
+gfx_rect_t film_app_damage(film_app_handle_t handle);
+
+/**
+ * 屏幕休眠：无操作 15 s 调暗（取景停下），30 s 关屏；触摸、按键、拿起或晃动唤醒。
+ * 唤醒的那一下触摸或按键只用来唤醒，不交给页面，避免误按快门。
+ *
+ * 外部来源的操作（如 Gateway 远程点按）在送入触摸前调用本函数：立即唤醒并重置计时，
+ * 随后的触摸照常生效。
+ */
+void film_app_wake(film_app_handle_t handle, uint32_t now_ms);
+
+/** 当前屏幕状态 */
+film_display_t film_app_display(film_app_handle_t handle);
 
 #ifdef __cplusplus
 }
