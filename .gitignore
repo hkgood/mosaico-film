@@ -1,0 +1,40 @@
+# macOS and editor files
+.DS_Store
+*.swp
+*.swo
+*~
+
+# ESP-IDF and host builds
+build/
+build_*/
+managed_components/
+sdkconfig
+sdkconfig.old
+.codex-runs/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Promo dependencies and generated media
+promo/node_modules/
+promo/out/
+promo/public/clips/
+promo/public/prints/
+promo/public/fonts/
+promo/public/fx/
+promo/public/audio/
+promo/public/render3d/
+promo/public/manifest.json
+
+# Local release staging. Public downloads belong in GitHub Releases;
+# web-ready derivatives are committed under docs/assets/.
+release/
+
+# Host-test output and generated captures
+Testing/
+darkroom_out/
+*.ppm
+!pc/assets/sensor_mock.ppm

@@ -1,0 +1,81 @@
+/* 精灵图渲染用样式：材质与光影完全取自已确认的 v3 样稿（.agents/analysis/lomo_camera/mockups/screens/v3.css），
+ * 去掉文字（文字由设备实时绘制以便横竖转正），并把胶卷窗拆成"底层玻璃 / 上层滚花与高光"两层，
+ * 中间由设备绘制胶卷名。 */
+:root { --amber: #ff9f2e; --led: #ff3b2b; }
+* { box-sizing: border-box; margin: 0; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
+body { position: relative; }
+.a { position: absolute; }
+svg { display: block; }
+
+.alu { background: url(tex/alu.png) center / 480px 480px; }
+.vulc { background: url(tex/vulcanite.png) 0 0 / 240px 240px; }
+.leather { background: url(tex/leather.png) 0 0 / 240px 240px; }
+.ribs-h { background: url(tex/ribs_h.png) 0 0 / 240px 8px repeat; }
+.ribs-v { background: url(tex/ribs_v.png) 0 0 / 4px 240px repeat; }
+.paper { background: url(tex/paper.png) center / cover; }
+.plate-light { background: linear-gradient(rgba(255,255,255,.18), rgba(255,255,255,0) 40%, rgba(0,0,0,.10)); }
+.seam-top { height: 2px; background: linear-gradient(#050505 0 1px, rgba(255,255,255,.55) 1px 2px); }
+
+.counter { position: absolute; width: 56px; height: 56px; transform: translate(-50%, -50%); border-radius: 50%;
+  background: url(tex/bezel.png) center / 56px 56px; box-shadow: 0 2px 4px rgba(0,0,0,.35), 0 0 0 1px rgba(0,0,0,.35); }
+.counter::before { content: ""; position: absolute; inset: 8px; border-radius: 50%;
+  background: radial-gradient(circle at 35% 25%, #2a2a28, #050505 60%); box-shadow: inset 0 2px 4px #000, 0 0 0 1px rgba(0,0,0,.6); }
+.counter::after { content: ""; position: absolute; inset: 8px; border-radius: 50%;
+  background: linear-gradient(160deg, rgba(255,255,255,.16), rgba(255,255,255,0) 45%); }
+
+.shutter { position: absolute; width: 84px; height: 84px; transform: translate(-50%, -50%); }
+.shutter .well { position: absolute; inset: -5px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(0,0,0,.55) 60%, rgba(0,0,0,0) 72%); }
+.shutter .knurl { position: absolute; inset: 0; background: url(tex/knurl_ring.png) center / 84px 84px;
+  filter: drop-shadow(0 2px 3px rgba(0,0,0,.45)); }
+.shutter .dome { position: absolute; left: 16px; top: 16px; width: 52px; height: 52px; border-radius: 50%;
+  background: url(tex/dome.png) center / 52px 52px; box-shadow: 0 2px 4px rgba(0,0,0,.45), 0 0 0 1px rgba(0,0,0,.25); }
+.shutter .thread { position: absolute; left: 37px; top: 37px; width: 10px; height: 10px; border-radius: 50%;
+  background: radial-gradient(circle, #111 0 2px, #6d6d69 2.5px 3px, #1c1c1b 3.5px, #9b9b96 5px); }
+/* 按下：穹顶下沉、变暗 */
+.shutter.down .dome { filter: brightness(.8); box-shadow: 0 1px 1px rgba(0,0,0,.5), 0 0 0 1px rgba(0,0,0,.35);
+  transform: scale(.97); }
+.shutter.down .knurl { filter: drop-shadow(0 1px 1px rgba(0,0,0,.45)); }
+
+.window { position: absolute; transform: translate(-50%, -50%); border-radius: 5px; overflow: hidden; }
+.window.base { background: linear-gradient(#3b3b39, #0b0b0a 22%, #050505 60%, #1d1d1c 88%, #3a3a38);
+  box-shadow: 0 0 0 1px #070707, 0 1px 0 1px rgba(255,255,255,.55), 0 2px 5px rgba(0,0,0,.35); }
+.window.over::after { content: ""; position: absolute; left: 0; right: 0; top: 18%; height: 18%;
+  background: linear-gradient(rgba(255,255,255,.10), rgba(255,255,255,0)); }
+.window.glow { overflow: visible;
+  box-shadow: 0 0 0 1px #070707, 0 0 0 3px rgba(255,159,46,.55), 0 0 14px rgba(255,159,46,.45); }
+.window .kn { position: absolute; top: 0; bottom: 0; width: 13px; background: url(tex/knurl_straight.png) 0 0 / 13px 12px repeat-y;
+  box-shadow: inset 0 0 0 .5px rgba(0,0,0,.6); }
+.window .kn.l { left: 0; } .window .kn.r { right: 0; }
+
+.lever { position: absolute; width: 36px; height: 18px; transform: translate(-50%, -50%); border-radius: 9px;
+  background: linear-gradient(#0a0a0a, #222); box-shadow: inset 0 1px 2px #000, 0 1px 0 rgba(255,255,255,.6); }
+.lever::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+  background: url(tex/dome.png) center / 14px 14px; box-shadow: 0 1px 2px rgba(0,0,0,.6); }
+.lever.on::after { left: 20px; }
+.lever.on::before { content: ""; position: absolute; left: 7px; top: 7px; width: 4px; height: 4px; border-radius: 50%;
+  background: var(--amber); box-shadow: 0 0 4px var(--amber); }
+
+.pop { position: absolute; border-radius: 10px; overflow: hidden;
+  box-shadow: 0 10px 24px rgba(0,0,0,.55), 0 0 0 1px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.6); }
+.caret { position: absolute; width: 14px; height: 14px; transform: translateX(-50%) rotate(45deg); }
+
+.sx-shutter { position: absolute; width: 80px; height: 80px; transform: translate(-50%, -50%); border-radius: 50%;
+  background: url(tex/bezel.png) center / 80px 80px; box-shadow: 0 3px 6px rgba(0,0,0,.5); }
+.sx-shutter::before { content: ""; position: absolute; inset: 9px; border-radius: 50%; background: #1a0f0a; box-shadow: inset 0 2px 3px #000; }
+.sx-shutter::after { content: ""; position: absolute; inset: 12px; border-radius: 50%;
+  background: radial-gradient(ellipse 60% 40% at 38% 28%, rgba(255,255,255,.55), rgba(255,255,255,0) 70%),
+    radial-gradient(circle at 50% 60%, #e8412a, #c42a17 55%, #7c1307 100%);
+  box-shadow: inset 0 -5px 8px rgba(60,5,0,.55), inset 0 2px 1px rgba(255,190,170,.35), 0 1px 2px rgba(0,0,0,.6); }
+.sx-shutter.down::after { inset: 13px; filter: brightness(.82);
+  box-shadow: inset 0 -3px 6px rgba(60,5,0,.6), inset 0 2px 2px rgba(0,0,0,.35); }
+.sx-counter { position: absolute; transform: translate(-50%, -50%); width: 44px; height: 32px; border-radius: 5px;
+  background: linear-gradient(#1b1b1a, #050505); box-shadow: 0 0 0 2px #9d9c96, 0 0 0 3px #3a2819, inset 0 2px 4px #000; }
+.pack { position: absolute; transform: translate(-50%, -50%); width: 54px; height: 50px; border-radius: 4px;
+  background: linear-gradient(150deg, #3a3a38, #121211 60%, #1d1d1c);
+  box-shadow: 0 2px 5px rgba(0,0,0,.6), inset 0 0 0 1px rgba(255,255,255,.08), inset 0 1px 0 rgba(255,255,255,.15); }
+.pack::before { content: ""; position: absolute; left: 6px; right: 6px; top: 6px; height: 26px; border-radius: 2px;
+  background: linear-gradient(150deg, rgba(255,255,255,.10), rgba(255,255,255,0) 60%); box-shadow: inset 0 0 0 1px rgba(0,0,0,.6); }
+.ev-ring { position: absolute; transform: translate(-50%, -50%); border-radius: 12px;
+  box-shadow: 0 0 0 2px #1c130d, 0 0 0 3px rgba(255,255,255,.18); }

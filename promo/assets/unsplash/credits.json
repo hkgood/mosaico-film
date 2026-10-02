@@ -1,0 +1,10 @@
+{
+  "zurich":    {"id": "lyum5c8gUWE", "title": "Old european street with charming buildings and bikes", "place": "Zurich", "focus": [0.5, 0.5]},
+  "arles":     {"id": "P1SP-XrOXrI", "title": "People walking down a sunlit european street with cafes", "author": "Yoan (@yoan_png)", "place": "Arles", "focus": [0.5, 0.6]},
+  "beach":     {"id": "0KTIIuoAroA", "title": "Beach during golden hour", "place": "Maui", "focus": [0.5, 0.66]},
+  "sunflower": {"id": "SdAcxjYo-aY", "title": "A large field of sunflowers on a sunny day", "place": "Tuscany", "focus": [0.5, 0.5]},
+  "tokyo":     {"id": "hDWZwQim_5s", "title": "A busy night street in tokyo lights up", "author": "mos design (@mosdesign)", "place": "Tokyo", "focus": [0.5, 0.5]},
+  "neon":      {"id": "vHXkjSouyE8", "title": "Bright neon signs illuminate a city street at night", "author": "ayumi kubo (@ayumikubo)", "place": "Shibuya", "focus": [0.5, 0.5]},
+  "cafe":      {"id": "6_Yye5kmEkM", "title": "Sunlight streams through a window onto a cafe table", "author": "Long Chung (@chungj07)", "focus": [0.5, 0.5]},
+  "coffee":    {"id": "w7wMaFirZiY", "title": "A white mug of coffee sits in sunlight", "author": "Jun Ren (@renjunn)", "focus": [0.62, 0.66]}
+}

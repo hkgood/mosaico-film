@@ -1,0 +1,30 @@
+{
+  "fps": 30,
+  "width": 1080,
+  "height": 1920,
+  "durationInFrames": 900,
+  "bpm": 120,
+  "scenes": {
+    "boot":      {"from": 0,   "duration": 90},
+    "title":     {"from": 90,  "duration": 60},
+    "films":     {"from": 150, "duration": 120},
+    "shutter":   {"from": 270, "duration": 90},
+    "bodies":    {"from": 360, "duration": 90},
+    "develop":   {"from": 450, "duration": 90},
+    "redevelop": {"from": 540, "duration": 90},
+    "share":     {"from": 630, "duration": 90},
+    "numbers":   {"from": 720, "duration": 90},
+    "finale":    {"from": 810, "duration": 90}
+  },
+  "clips": [
+    {"scene": "boot",      "clip": "boot",       "at": 0,  "src": 0,  "rate": 1,   "duration": 90},
+    {"scene": "films",     "clip": "m6_films",   "at": 0,  "src": 1,  "rate": 1,   "duration": 120},
+    {"scene": "shutter",   "clip": "m6_shot",    "at": 30, "src": 18, "rate": 1.2, "duration": 60},
+    {"scene": "bodies",    "clip": "picker",     "at": 0,  "src": 5,  "rate": 1,   "duration": 90},
+    {"scene": "develop",   "clip": "sx_develop", "at": 0,  "src": 0,  "rate": 1,   "duration": 90},
+    {"scene": "redevelop", "clip": "redevelop",  "at": 0,  "src": 76, "rate": 1.6, "duration": 90},
+    {"scene": "share",     "clip": "share",      "at": 0,  "src": 0,  "rate": 2,   "duration": 40},
+    {"scene": "share",     "clip": "share",      "at": 40, "src": 80, "rate": 5.3, "duration": 50},
+    {"scene": "finale",    "clip": "finale",     "at": 0,  "src": 60, "rate": 1,   "duration": 90}
+  ]
+}

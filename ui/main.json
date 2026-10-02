@@ -1,0 +1,24 @@
+{
+  "screen": "film",
+  "w": 480,
+  "h": 480,
+  "screen_bg": "#0E0E0D",
+  "font": "fonts/DejaVuSans.ttf",
+  "default_font_size": 16,
+  "font_charset": " ",
+  "swipe": false,
+  "objects": [
+    {
+      "type": "image",
+      "parent": -1,
+      "name": "screen",
+      "x": 0,
+      "y": 0,
+      "w": 480,
+      "h": 480,
+      "image": "screen.png",
+      "codec": "lossless",
+      "bind": "screen"
+    }
+  ]
+}

@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Mosaico Film — 装进 ESP-Mosaico 的随身胶片暗房</title>
+  <meta name="description" content="Mosaico Film 把 ESP-Mosaico 变成一台有取景、胶卷、本地暗房、相册和手机分享的数码胶片相机。">
+  <meta name="theme-color" content="#0c0a09">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Mosaico Film">
+  <meta property="og:description" content="A pocket film lab inside ESP-Mosaico.">
+  <meta property="og:url" content="https://hkgood.github.io/mosaico-film/">
+  <meta property="og:image" content="https://hkgood.github.io/mosaico-film/assets/img/og-cover.jpg">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22><rect width=%2264%22 height=%2264%22 rx=%2214%22 fill=%22%230c0a09%22/><circle cx=%2232%22 cy=%2232%22 r=%2215%22 fill=%22none%22 stroke=%22%23ff9a3c%22 stroke-width=%226%22/><circle cx=%2232%22 cy=%2232%22 r=%225%22 fill=%22%23f1e8d8%22/></svg>">
+  <link rel="stylesheet" href="css/style.css">
+  <script src="js/main.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main" data-en="Skip to content">跳到正文</a>
+
+  <header class="site-header">
+    <a class="brand" href="#top" aria-label="Mosaico Film home">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span>MOSAICO FILM</span>
+    </a>
+    <nav aria-label="Primary">
+      <a href="#film" data-en="Film">影片</a>
+      <a href="#workflow" data-en="Workflow">流程</a>
+      <a href="#stocks" data-en="Films">胶卷</a>
+      <a href="#engineering" data-en="Engineering">技术</a>
+      <a href="#install" data-en="Install">安装</a>
+    </nav>
+    <button class="lang-toggle" type="button" aria-label="Switch language">
+      <span class="lang-current">EN</span>
+    </button>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="top">
+      <div class="hero-glow" aria-hidden="true"></div>
+      <div class="hero-copy">
+        <p class="eyebrow" data-en="ESP-MOSAICO · CAMERA APPLICATION">ESP-MOSAICO · 相机应用</p>
+        <h1>
+          <span data-en="A pocket">随身的</span>
+          <em data-en="film lab.">胶片暗房。</em>
+        </h1>
+        <p class="hero-lead" data-en="Frame with a classic camera, press the shutter, then watch curves, grain and light become a photograph — entirely on the device.">
+          用经典相机取景，按下快门，看曲线、颗粒与光线在设备里变成一张照片。
+        </p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="https://github.com/hkgood/mosaico-film/releases/latest" data-en="Download v1.0.0">下载 v1.0.0</a>
+          <a class="button button-ghost" href="#film" data-en="Watch the film">观看演示片</a>
+        </div>
+        <p class="coming-soon" data-en="Online installer coming soon">在线烧录即将上线</p>
+      </div>
+
+      <div class="hero-visual">
+        <div class="poster-frame">
+          <img src="assets/video/mosaico_film_demo_poster.jpg" alt="Mosaico Film on ESP-Mosaico">
+          <span class="frame-index">01 / 36</span>
+        </div>
+        <div class="proof-strip" aria-label="Product facts">
+          <span><strong>8</strong><small data-en="FILMS">胶卷</small></span>
+          <span><strong>2</strong><small data-en="BODIES">机身</small></span>
+          <span><strong>480²</strong><small data-en="CANVAS">画布</small></span>
+          <span><strong>LOCAL</strong><small data-en="DARKROOM">暗房</small></span>
+        </div>
+      </div>
+      <a class="scroll-cue" href="#film" aria-label="Scroll to film"><span></span></a>
+    </section>
+
+    <section class="section film-section" id="film">
+      <div class="section-heading reveal">
+        <p class="eyebrow" data-en="30 SECONDS · ONE COMPLETE ROLL">30 秒 · 一卷完整旅程</p>
+        <h2 data-en="The film about Film.">一部关于胶片的影片。</h2>
+        <p data-en="Camera body, film dial, shutter, development, reprocessing and phone delivery — captured from the real UI and staged in the same darkroom language.">
+          机身、胶卷拨轮、快门、冲洗、重洗与发送到手机——真实界面记录，统一在暗房语言里呈现。
+        </p>
+      </div>
+      <div class="film-player reveal">
+        <video controls playsinline preload="metadata" poster="assets/video/mosaico_film_demo_poster.jpg">
+          <source src="assets/video/mosaico_film_demo.mp4" type="video/mp4">
+        </video>
+        <div class="film-meta">
+          <span>MOSAICO FILM / 01</span>
+          <span>00:30 · 9:16 · H.264</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section workflow-section" id="workflow">
+      <div class="section-heading reveal">
+        <p class="eyebrow" data-en="THE WHOLE PROCESS">完整流程</p>
+        <h2 data-en="From photons to a print.">从光线，到一张相纸。</h2>
+      </div>
+
+      <div class="workflow-grid">
+        <article class="workflow-card card-wide reveal">
+          <video class="lazy-loop" muted loop playsinline preload="none"
+                 poster="assets/loops/m6_shot.jpg" data-src="assets/loops/m6_shot.mp4"></video>
+          <div class="card-copy">
+            <span class="step">01</span>
+            <h3 data-en="Frame & shoot">取景与拍摄</h3>
+            <p data-en="A live 4:3 or square viewfinder, exposure compensation, date stamp and the red hardware shutter.">
+              4:3 或方形实时取景，曝光补偿、日期戳，以及机身红色实体快门。
+            </p>
+          </div>
+        </article>
+
+        <article class="workflow-card reveal">
+          <video class="lazy-loop" muted loop playsinline preload="none"
+                 poster="assets/loops/sx_develop.jpg" data-src="assets/loops/sx_develop.mp4"></video>
+          <div class="card-copy">
+            <span class="step">02</span>
+            <h3 data-en="Develop locally">本地冲洗</h3>
+            <p data-en="Crop, rotate, grade, add halation, vignette and grain, then write the full-resolution JPEG to NAND.">
+              裁切、转正、调色、红晕、暗角与颗粒，再将全尺寸 JPEG 写入 NAND。
+            </p>
+          </div>
+        </article>
+
+        <article class="workflow-card reveal">
+          <video class="lazy-loop" muted loop playsinline preload="none"
+                 poster="assets/loops/redevelop.jpg" data-src="assets/loops/redevelop.mp4"></video>
+          <div class="card-copy">
+            <span class="step">03</span>
+            <h3 data-en="Reprocess the source">换一卷，再冲一次</h3>
+            <p data-en="The source frame stays in the library. Turn the drum, compare a new stock and create another interpretation.">
+              原片留在相册里。转动滚筒换一卷胶片，再生成一个新的版本。
+            </p>
+          </div>
+        </article>
+
+        <article class="workflow-card card-wide reveal">
+          <video class="lazy-loop" muted loop playsinline preload="none"
+                 poster="assets/loops/share.jpg" data-src="assets/loops/share.mp4"></video>
+          <div class="card-copy">
+            <span class="step">04</span>
+            <h3 data-en="Scan. Open. Save.">扫一扫，存进手机。</h3>
+            <p data-en="Select photos and scan the session QR. Share through the current Wi-Fi or a temporary camera hotspot — no companion app.">
+              选择照片并扫描会话二维码，通过当前 Wi‑Fi 或相机临时热点下载，无需配套 App。
+            </p>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="section stocks-section" id="stocks">
+      <div class="section-heading reveal">
+        <p class="eyebrow" data-en="EIGHT FILM STOCKS">八卷胶片</p>
+        <h2 data-en="Different light, different memory.">不同的胶卷，不同的光。</h2>
+        <p data-en="Every look is a deterministic C pipeline, not a LUT: curves, color, halation, vignette, leaks and grain are composed on the device.">
+          每一种效果都是可复现的 C 冲洗管线，而不是 LUT：曲线、颜色、红晕、暗角、漏光与颗粒都在设备上合成。
+        </p>
+      </div>
+
+      <div class="stock-lab reveal">
+        <div class="stock-print">
+          <img id="stock-image" src="assets/prints/films_0.webp" alt="GOLD 200 sample">
+          <div class="print-caption">
+            <span id="stock-name">GOLD 200</span>
+            <span class="stamp">26 10 02</span>
+          </div>
+        </div>
+        <div class="stock-controls">
+          <p id="stock-description" data-en-default="Warm color, rich daylight and soft grain.">暖金色调、饱满日光与柔和颗粒。</p>
+          <div class="stock-tabs" role="tablist" aria-label="Film stocks">
+            <button class="stock-tab active" type="button" role="tab" aria-selected="true" data-index="0" data-name="GOLD 200" data-zh="暖金色调、饱满日光与柔和颗粒。" data-en-desc="Warm color, rich daylight and soft grain.">GOLD</button>
+            <button class="stock-tab" type="button" role="tab" aria-selected="false" data-index="1" data-name="SOFT 400" data-zh="低反差、自然肤色与轻微暖影。" data-en-desc="Lower contrast, natural skin tones and warm shadows.">SOFT</button>
+            <button class="stock-tab" type="button" role="tab" aria-selected="false" data-index="2" data-name="VERDE 200" data-zh="青绿色阴影与清透高光。" data-en-desc="Green-blue shadows and clear highlights.">VERDE</button>
+            <button class="stock-tab" type="button" role="tab" aria-selected="false" data-index="3" data-name="CROSS X" data-zh="高反差负冲、蓝色暗部与暖黄高光。" data-en-desc="Cross-processed contrast, blue shadows and warm highlights.">CROSS</button>
+            <button class="stock-tab" type="button" role="tab" aria-selected="false" data-index="4" data-name="SILVER 400" data-zh="银盐黑白、明显颗粒与暗角。" data-en-desc="Silver-gelatin monochrome, pronounced grain and vignette.">SILVER</button>
+            <button class="stock-tab" type="button" role="tab" aria-selected="false" data-index="5" data-name="FADED 77" data-zh="褪色暖调与抬高黑位的旧照片感。" data-en-desc="Faded warmth and lifted blacks.">FADED</button>
+            <button class="stock-tab" type="button" role="tab" aria-selected="false" data-index="6" data-name="NIGHT 800T" data-zh="钨丝灯夜景、冷调与红色光晕。" data-en-desc="Tungsten nights, cool color and red halation.">NIGHT</button>
+            <button class="stock-tab" type="button" role="tab" aria-selected="false" data-index="7" data-name="PIXEL 8BIT" data-zh="下采样与调色板量化的像素胶卷。" data-en-desc="Downsampling and palette quantization.">PIXEL</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section bodies-section" id="bodies">
+      <div class="section-heading reveal">
+        <p class="eyebrow" data-en="TWO CAMERA EXPERIENCES">两种相机体验</p>
+        <h2 data-en="Choose the way you see.">选择你看世界的方式。</h2>
+      </div>
+      <div class="body-stage reveal">
+        <video class="lazy-loop" muted loop playsinline preload="none"
+               poster="assets/loops/picker.jpg" data-src="assets/loops/picker.mp4"></video>
+        <div class="body-notes">
+          <article>
+            <span>M6 / 01</span>
+            <h3 data-en="Rangefinder rhythm">旁轴节奏</h3>
+            <p data-en="4:3 framing, film counter, exposure dial and quick consecutive shooting.">
+              4:3 取景、胶卷计数、曝光拨轮与连续拍摄。
+            </p>
+          </article>
+          <article>
+            <span>SX / 02</span>
+            <h3 data-en="Instant ritual">即时仪式</h3>
+            <p data-en="Square framing, paper composition and tactile lever feedback.">
+              方形取景、相纸排版与机械拨杆触感。
+            </p>
+          </article>
+        </div>
+      </div>
+      <p class="trademark-note reveal" data-en="Camera names and marks belong to their respective owners. Mosaico Film is independent and unaffiliated.">
+        相机名称与商标归各自权利人所有；Mosaico Film 为独立项目，与其无关联。
+      </p>
+    </section>
+
+    <section class="section engineering-section" id="engineering">
+      <div class="section-heading reveal">
+        <p class="eyebrow" data-en="BUILT LIKE A CAMERA">像相机一样构建</p>
+        <h2 data-en="One C core. Two worlds.">一套 C 核心，两个运行世界。</h2>
+        <p data-en="The same UI, film pipeline and interaction model run in the PC preview and on ESP32-S31. Hardware enters through one explicit port.">
+          同一套界面、胶片管线与交互模型同时运行在 PC 预览和 ESP32-S31 上，硬件能力只通过一个明确的端口接入。
+        </p>
+      </div>
+
+      <div class="architecture reveal" aria-label="Software architecture">
+        <div class="arch-node">
+          <small>ESP-GSP</small>
+          <strong>480×480 Canvas</strong>
+        </div>
+        <span class="arch-arrow" aria-hidden="true">↓</span>
+        <div class="arch-node arch-primary">
+          <small>PORTABLE C</small>
+          <strong>film_ui + film_darkroom</strong>
+        </div>
+        <span class="arch-arrow split" aria-hidden="true">↙︎ &nbsp; ↘︎</span>
+        <div class="arch-branches">
+          <div class="arch-node"><small>DESKTOP</small><strong>PC simulator</strong></div>
+          <div class="arch-node"><small>DEVICE</small><strong>Camera · NAND · Wi-Fi</strong></div>
+        </div>
+      </div>
+
+      <div class="tech-grid">
+        <article class="tech-card reveal"><span>01</span><h3 data-en="Real development">真实冲洗管线</h3><p data-en="Curves, split toning, halation, vignette, light leaks and grain — composed locally.">曲线、分离色调、红晕、暗角、漏光与颗粒，在本地逐层合成。</p></article>
+        <article class="tech-card reveal"><span>02</span><h3 data-en="Responsive capture">异步拍摄链路</h3><p data-en="Preview, processing, JPEG encoding and NAND writes are separated by owned queues and events.">取景、冲洗、JPEG 编码与 NAND 写入通过明确所有权的队列和事件分工。</p></article>
+        <article class="tech-card reveal"><span>03</span><h3 data-en="Host-testable">可在主机测试</h3><p data-en="Filters, darkroom, library and complete UI scripts compile as ordinary C11 targets.">滤镜、暗房、相册和完整 UI 脚本都能编译为普通 C11 测试目标。</p></article>
+        <article class="tech-card reveal"><span>04</span><h3 data-en="Recovery-safe">保留恢复能力</h3><p data-en="System-update preserves the retained Vibe Mode prefix while delivering app and asset images together.">System Update 保留 Vibe Mode 固定前缀，同时交付应用与素材镜像。</p></article>
+      </div>
+    </section>
+
+    <section class="install-section" id="install">
+      <div class="install-inner reveal">
+        <p class="eyebrow" data-en="READY TO SHOOT">准备拍摄</p>
+        <h2 data-en="Put a darkroom on your desk.">把暗房放到桌上。</h2>
+        <p data-en="Requires an ESP-Mosaico board and the OV3640 camera module in the left expansion slot.">
+          需要一块 ESP-Mosaico 主板，以及安装在左侧扩展位的 OV3640 相机模块。
+        </p>
+        <div class="install-actions">
+          <a class="button button-dark" href="https://github.com/hkgood/mosaico-film/releases/latest" data-en="Download firmware">下载固件</a>
+          <a class="button button-paper" href="https://github.com/hkgood/mosaico-film" data-en="View source">查看源码</a>
+        </div>
+        <div class="install-steps">
+          <span><b>01</b><small data-en="Download .irisfw">下载 .irisfw</small></span>
+          <span><b>02</b><small data-en="Run system-update">运行 system-update</small></span>
+          <span><b>03</b><small data-en="Insert camera & shoot">装上相机，开始拍摄</small></span>
+        </div>
+        <p class="install-note" data-en="The online installer is coming soon. Blank or unverified devices should run recover before the first install.">
+          在线烧录即将上线。空白或状态未验证的设备首次安装前请先运行 recover。
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="footer-brand"><span class="brand-mark" aria-hidden="true"></span>MOSAICO FILM</div>
+    <p data-en="Made for ESP-Mosaico. Developed in C, under a red safelight.">为 ESP-Mosaico 打造。用 C 开发，在红色安全灯下冲洗。</p>
+    <div class="footer-links">
+      <a href="https://github.com/hkgood/mosaico-film">GitHub</a>
+      <a href="https://github.com/hkgood/mosaico-film/releases">Releases</a>
+      <a href="https://github.com/hkgood/mosaico-film/blob/main/DEVELOPMENT.md" data-en="Development">开发文档</a>
+      <a href="https://github.com/hkgood/mosaico-film/blob/main/THIRD_PARTY_NOTICES.md" data-en="Credits">致谢</a>
+    </div>
+    <small>Apache-2.0 · © 2026 Rocky</small>
+  </footer>
+</body>
+</html>
