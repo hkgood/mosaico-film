@@ -4,7 +4,7 @@
   "private": true,
   "description": "30-second Remotion demo film for Mosaico Film on ESP-Mosaico",
   "scripts": {
-    "audio": "~/.venvs/film-promo/bin/python ../tools/promo/promo_audio.py",
+    "audio": "python3 ../tools/promo/promo_audio.py",
     "render3d": "node render3d/render.mjs",
     "studio": "remotion studio",
     "still": "remotion still FilmPromo",
