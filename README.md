@@ -8,9 +8,9 @@
 
 取景 · 拍摄 · 冲洗 · 重洗 · 分享
 
+[![在线烧录](https://img.shields.io/badge/在线烧录-Mosaico_Ideas-ff5a1f?style=for-the-badge)](https://mosaico-ideas.espressif.com/firmware/1cc4d85f-a6cf-4f7d-af48-17ca3bd18bd8)
 [![项目主页](https://img.shields.io/badge/项目主页-GitHub_Pages-ff9a3c?style=for-the-badge)](https://hkgood.github.io/mosaico-film/)
 [![下载固件](https://img.shields.io/badge/下载固件-v1.0.0-c8371f?style=for-the-badge)](https://github.com/hkgood/mosaico-film/releases/latest)
-![在线烧录](https://img.shields.io/badge/在线烧录-即将上线-6f6861?style=for-the-badge)
 
 [![Release](https://img.shields.io/github/v/release/hkgood/mosaico-film?style=flat-square&color=ff9a3c)](https://github.com/hkgood/mosaico-film/releases/latest)
 [![License](https://img.shields.io/badge/license-Apache--2.0-f1e8d8?style=flat-square)](LICENSE)
@@ -93,13 +93,19 @@ Mosaico Film 把 ESP-Mosaico 变成一台有取景器、快门、胶卷和暗房
 - ESP-Mosaico 主板（ESP32-S31，16 MB Flash）
 - 安装在左侧扩展位的 OV3640 相机模块
 
+**在线烧录（推荐）**
+
+1. 打开 Mosaico Ideas 上的 [Mosaico Film 官方烧录页](https://mosaico-ideas.espressif.com/firmware/1cc4d85f-a6cf-4f7d-af48-17ca3bd18bd8)。
+2. 用 USB 连接设备，在「下载固件」区域选择「在线烧录」，按页面提示完成安装。
+3. 烧录页同时提供 Iris 包和完整 BIN 下载；完整 BIN 用于首次安装，会覆盖设备上的固件与设置。
+
 **通过 GitHub Release 安装**
 
 1. 从 [v1.0.0 Release](https://github.com/hkgood/mosaico-film/releases/latest) 下载 `.irisfw`。
 2. 在 ESP-Mosaico 工作区使用 `python mosaico.py iris system-update --bundle <package.irisfw>` 安装。
 3. 空白或状态未验证的设备请先运行 `python mosaico.py recover`。
 
-在线烧录页面正在准备中。Mosaico Film 使用独立的 `assets` 分区和应用布局，因此首次安装必须使用完整的 `system-update`；Vibe Mode 的恢复固件与配置保持不变。
+Mosaico Film 使用独立的 `assets` 分区和应用布局，因此首次安装必须使用完整的 `system-update`；Vibe Mode 的恢复固件与配置保持不变。
 
 ## 🧩 技术亮点
 

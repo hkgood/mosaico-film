@@ -8,9 +8,9 @@
 
 Frame · Shoot · Develop · Reprocess · Share
 
+[![Web installer](https://img.shields.io/badge/Web_installer-Mosaico_Ideas-ff5a1f?style=for-the-badge)](https://mosaico-ideas.espressif.com/firmware/1cc4d85f-a6cf-4f7d-af48-17ca3bd18bd8)
 [![Project site](https://img.shields.io/badge/Project_site-GitHub_Pages-ff9a3c?style=for-the-badge)](https://hkgood.github.io/mosaico-film/)
 [![Download firmware](https://img.shields.io/badge/Download_firmware-v1.0.0-c8371f?style=for-the-badge)](https://github.com/hkgood/mosaico-film/releases/latest)
-![Web installer](https://img.shields.io/badge/Web_installer-Coming_soon-6f6861?style=for-the-badge)
 
 [![Release](https://img.shields.io/github/v/release/hkgood/mosaico-film?style=flat-square&color=ff9a3c)](https://github.com/hkgood/mosaico-film/releases/latest)
 [![License](https://img.shields.io/badge/license-Apache--2.0-f1e8d8?style=flat-square)](LICENSE)
@@ -93,13 +93,19 @@ The viewfinder uses a fast preview path; final photos use the complete developme
 - ESP-Mosaico board (ESP32-S31, 16 MB flash)
 - OV3640 camera module in the left expansion slot
 
+**Web installer (recommended)**
+
+1. Open the [official Mosaico Film page](https://mosaico-ideas.espressif.com/firmware/1cc4d85f-a6cf-4f7d-af48-17ca3bd18bd8) on Mosaico Ideas.
+2. Connect the device over USB, choose **Online flashing** in the firmware download panel and follow the on-page steps.
+3. The page also offers the Iris package and a full BIN. The full BIN is meant for first installation and overwrites the firmware and settings on the device.
+
 **Install from GitHub Releases**
 
 1. Download the `.irisfw` bundle from the [v1.0.0 release](https://github.com/hkgood/mosaico-film/releases/latest).
 2. In an ESP-Mosaico workspace, run `python mosaico.py iris system-update --bundle <package.irisfw>`.
 3. Run `python mosaico.py recover` first for a blank or unverified device.
 
-The online installer is being prepared. Mosaico Film uses its own `assets` partition and application layout, so the first installation must be a full `system-update`. The retained Vibe Mode firmware and its settings remain intact.
+Mosaico Film uses its own `assets` partition and application layout, so the first installation must be a full `system-update`. The retained Vibe Mode firmware and its settings remain intact.
 
 ## 🧩 Engineering highlights
 
