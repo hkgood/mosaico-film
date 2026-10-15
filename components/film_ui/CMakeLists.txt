@@ -6,6 +6,7 @@ idf_component_register(
         "cam_picker.c"
         "cam_sx.c"
         "film_library.c"
+        "film_pending.c"
         "scr_album.c"
         "scr_camera.c"
         "scr_detail.c"

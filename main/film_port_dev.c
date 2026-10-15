@@ -129,6 +129,19 @@ static void on_lab_busy(void *ctx, bool busy)
     }
 }
 
+/* 电量低于此且没在充电：不再开始全尺寸冲洗（原片已落盘，下次开机续冲） */
+#define LOW_BATTERY_NO_DEVELOP_PERCENT 5
+
+static bool on_can_develop(void *ctx)
+{
+    film_port_dev_handle_t p = ctx;
+    film_battery_t battery;
+    if (!p->power || !film_power_get(p->power, &battery)) {
+        return true;   /* 读不到电量就不拦 */
+    }
+    return battery.charging || battery.percent > LOW_BATTERY_NO_DEVELOP_PERCENT;
+}
+
 static esp_err_t dev_shoot(void *ctx, const film_shot_t *shot)
 {
     film_port_dev_handle_t p = ctx;
@@ -143,6 +156,12 @@ static esp_err_t dev_shoot(void *ctx, const film_shot_t *shot)
         film_lab_cancel_reserve(p->lab);
     }
     return err;
+}
+
+static size_t dev_pending_count(void *ctx)
+{
+    film_port_dev_handle_t p = ctx;
+    return film_lab_pending(p->lab);
 }
 
 static esp_err_t dev_redevelop(void *ctx, const film_shot_t *shot)
@@ -339,7 +358,7 @@ esp_err_t film_port_dev_create(const film_port_dev_config_t *config, film_port_d
     }
     const film_lab_config_t lab = {
         .core = LAB_CORE, .priority = LAB_PRIORITY, .writer_priority = WRITER_PRIORITY, .events = p->events,
-        .on_busy = on_lab_busy, .ctx = p,
+        .on_busy = on_lab_busy, .can_develop = on_can_develop, .ctx = p,
     };
     esp_err_t err = film_lab_start(&lab, &p->lab);
     if (err != ESP_OK) {
@@ -385,6 +404,7 @@ esp_err_t film_port_dev_create(const film_port_dev_config_t *config, film_port_d
         .preview_pause = dev_preview_pause,
         .shoot = dev_shoot,
         .redevelop = dev_redevelop,
+        .pending_count = dev_pending_count,
         .release_result = dev_release_result,
         .poll_event = dev_poll_event,
         .storage_root = dev_storage_root,

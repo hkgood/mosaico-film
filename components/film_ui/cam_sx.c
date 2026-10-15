@@ -162,15 +162,21 @@ static void paper_rect(gfx_canvas_t *c, float x, float y, float w, float h, int 
     gfx_quad_q4(c, p, color, alpha);
 }
 
-/** 显影程度 0..1：直接取暗房全尺寸冲洗的真实进度（相纸上先是小样，雾层随进度褪去） */
+/*
+ * 显影程度 0..1：按时间推进（相纸上先是小样，雾层随时间褪去）。全尺寸成片在后台延后冲洗，
+ * 显影页不再等它——否则连拍时每张都要等几秒；点一下或按快门键随时结束。
+ */
+#define DEVELOP_ANIM_MS 3600
+
 static float develop_progress(const film_app_t *app)
 {
-    return (float)app->cam.dev_progress / (float)FILM_PROGRESS_DONE;
+    /* 相纸吐出一半时开始褪雾 */
+    return cam_progress(app->now, app->cam.dev_emerge_t0 + EMERGE_MS / 2, DEVELOP_ANIM_MS);
 }
 
 static bool develop_done(const film_app_t *app)
 {
-    return app->cam.dev_progress >= FILM_PROGRESS_DONE;
+    return develop_progress(app) >= 1.0f;
 }
 
 static void draw_developing(film_app_t *app, gfx_canvas_t *c)
@@ -223,7 +229,7 @@ static void draw_developing(film_app_t *app, gfx_canvas_t *c)
             gfx_fill_round(c, gfx_rect(160, 402, w, 2), 1, COLOR_AMBER, 255);
         }
         char label[24];
-        snprintf(label, sizeof(label), "DEVELOPING  %u%%", (unsigned)(cam->dev_progress / 10));
+        snprintf(label, sizeof(label), "DEVELOPING  %u%%", (unsigned)(t * 100.0f));
         const gfx_text_style_t st = ui_style(&font_jost_m10, 10, 0.42f, 0xF1E4CD, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
         gfx_text(c, &st, 244, 425, label);
     }
@@ -239,17 +245,11 @@ bool cam_sx_step(film_app_t *app)
         if (!cam->dev_done_at) {
             cam->dev_done_at = app->now;
         } else if (app->now - cam->dev_done_at >= DEVELOP_LINGER_MS) {
-            cam_close(app);
-            cam_sx_refresh_stack(app);
-            if (cam->shot_pending_rollend) {
-                cam->shot_pending_rollend = false;
-                cam_open(app, CAM_OVL_ROLLEND);
-            }
+            cam_skip_shot_anim(app);   /* 收页、刷新相纸堆；收完一卷则弹出换卷提示 */
             return true;
         }
     }
-    /* 只有相纸吐出的动画需要逐帧画；显影雾层由进度事件驱动重绘，把 CPU 留给冲洗 */
-    return (int32_t)(app->now - cam->dev_emerge_t0) < EMERGE_MS + 40;   /* 快门帘期间 t0 还在未来 */
+    return true;   /* 吐出与显影都按时间推进，逐帧重画；全尺寸冲洗此时不在运行 */
 }
 
 void cam_sx_event(film_app_t *app, const film_event_t *ev)
@@ -340,9 +340,9 @@ void cam_sx_gesture(film_app_t *app, const gesture_t *g)
 {
     cam_state_t *cam = &app->cam;
     if (cam->overlay == CAM_OVL_DEVELOPING) {
-        /* 冲洗中不能跳过（全尺寸还在算）；冲完后轻点立即回取景 */
-        if (g->kind == GEST_TAP && develop_done(app)) {
-            cam->dev_done_at = app->now - DEVELOP_LINGER_MS;
+        /* 点一下随时结束显影页回到取景（成片在后台冲洗，不受影响） */
+        if (g->kind == GEST_TAP) {
+            cam_skip_shot_anim(app);
         }
         return;
     }

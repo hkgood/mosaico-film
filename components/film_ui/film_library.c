@@ -37,8 +37,31 @@ void film_library_path(const char *root, uint32_t id, film_file_kind_t kind, cha
         [FILM_FILE_RAW] = "_RAW.JPG",
         [FILM_FILE_SCREEN] = ".SCR",
         [FILM_FILE_THUMB] = ".THM",
+        [FILM_FILE_PENDING] = ".PND",
     };
     snprintf(buf, len, "%s/" ID_DIGITS_FMT "%s", root, (unsigned)id, suffix[kind]);
+}
+
+uint32_t film_library_max_id_on_disk(const char *root)
+{
+    DIR *dir = root ? opendir(root) : NULL;
+    if (!dir) {
+        return 0;
+    }
+    uint32_t max_id = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        unsigned id = 0;
+        char tail[12] = { 0 };
+        if (sscanf(entry->d_name, ID_DIGITS_FMT "%11s", &id, tail) != 2) {
+            continue;
+        }
+        if ((strcmp(tail, ".PND") == 0 || strcmp(tail, "_RAW.JPG") == 0 || strcmp(tail, ".SCR") == 0) && id > max_id) {
+            max_id = id;
+        }
+    }
+    closedir(dir);
+    return max_id;
 }
 
 static void index_path(const film_library_handle_t lib, char *buf, size_t len)
@@ -188,6 +211,11 @@ esp_err_t film_library_create(const film_library_config_t *config, film_library_
         qsort(lib->photos, lib->count, sizeof(film_photo_t), compare_id);
     }
     lib->next_id = lib->count ? lib->photos[lib->count - 1].id + 1 : 1;
+    /* 待冲洗（断电前拍的）照片还不在索引里，但编号已经用掉，不能再发给新照片 */
+    const uint32_t on_disk = film_library_max_id_on_disk(lib->root);
+    if (on_disk >= lib->next_id) {
+        lib->next_id = on_disk + 1;
+    }
     *ret_handle = lib;
     return ESP_OK;
 }

@@ -126,6 +126,11 @@ target_link_libraries(film_library_test PRIVATE film_ui)
 target_compile_options(film_library_test PRIVATE -Wall -Wextra -Werror)
 add_test(NAME film_library_test COMMAND film_library_test)
 
+add_executable(film_pending_test test_film_pending.c)
+target_link_libraries(film_pending_test PRIVATE film_ui)
+target_compile_options(film_pending_test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME film_pending_test COMMAND film_pending_test)
+
 # ---------------------------------------------------------------- 界面交互脚本（PC 平台服务 + 完整 film_app）
 add_executable(film_ui_script film_ui_script.c ppm_io.c "${CMAKE_CURRENT_LIST_DIR}/../pc/film_port_pc.c")
 # 宣传片素材录制（tools/promo）：与交互脚本同样驱动完整的 film_app，不作为测试运行

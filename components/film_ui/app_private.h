@@ -381,6 +381,7 @@ struct film_app_t {
     bool camera_ok;
     bool storage_ok;
     int shots_left;             /*!< 按剩余空间估算还能拍几张，-1 表示未知 */
+    unsigned pending;           /*!< 已拍下、还没冲出成片的张数（平台后台冲洗），端口没有该能力时恒为 0 */
     bool preview_paused;        /*!< 已请求平台暂停取景转换（机身选择面板打开期间画面定格） */
 
     /* 屏幕休眠（app_power.c） */

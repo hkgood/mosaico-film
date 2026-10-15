@@ -174,11 +174,37 @@ static gfx_rect_t m6_image_rect(const film_app_t *app, gfx_rect_t window)
     return w >= window.w ? window : gfx_rect(window.x + (window.w - w) / 2, window.y, w, window.h);
 }
 
+void cam_skip_shot_anim(film_app_t *app)
+{
+    cam_state_t *cam = &app->cam;
+    const bool developing = cam->overlay == CAM_OVL_DEVELOPING;
+    /* 快门帘（70 ms）不能被打断：取景要先黑一下，原片也在这时取 */
+    if (cam->shot == SHOT_FLASH || (!developing && cam->shot == SHOT_IDLE)) {
+        return;
+    }
+    if (developing) {
+        cam_close(app);
+        cam_sx_refresh_stack(app);
+    }
+    cam->shot = SHOT_IDLE;
+    if (cam->shot_pending_rollend) {
+        cam->shot_pending_rollend = false;
+        cam_open(app, CAM_OVL_ROLLEND);
+    }
+    app->dirty = true;
+}
+
 void cam_fire(film_app_t *app)
 {
     cam_state_t *cam = &app->cam;
-    if (cam->overlay != CAM_OVL_NONE || cam->shot != SHOT_IDLE || cam->skin_swapping) {
+    if (cam->skin_swapping || cam->shot == SHOT_FLASH ||
+        (cam->overlay != CAM_OVL_NONE && cam->overlay != CAM_OVL_DEVELOPING)) {
         return;
+    }
+    /* 上一张的拍后动画还没播完：直接结束它，不让动画挡住下一张 */
+    cam_skip_shot_anim(app);
+    if (cam->overlay != CAM_OVL_NONE) {
+        return;   /* 刚好收完一卷，弹出了换卷提示 */
     }
     if (!app->storage_ok || !app->library) {
         app_toast(app, "存储不可用，无法保存照片");
@@ -652,9 +678,11 @@ static void draw_m6_controls(film_app_t *app, gfx_canvas_t *c)
     snprintf(n, sizeof(n), "%02u", (unsigned)app->settings.frame);
     ui_glow_text(c, &font_jost_m19, &font_jost_m19_glow, 19, 0.02f, COLOR_AMBER, cam->counter_down ? 200 : 115,
                  GFX_ALIGN_CENTER, rot, M6_COUNTER_X, M6_COUNTER_Y, n);
-    /* 空间快满时标签换成剩余张数，平时仍是 ROLL */
-    char label[12] = "ROLL";
-    if (app->shots_left >= 0 && app->shots_left <= FILM_SHOTS_LEFT_WARN) {
+    /* 标签平时是 ROLL；有照片在后台排队冲洗时显示张数，空间快满时显示剩余张数 */
+    char label[20] = "ROLL";
+    if (app->pending) {
+        snprintf(label, sizeof(label), "DEV %u", app->pending);
+    } else if (app->shots_left >= 0 && app->shots_left <= FILM_SHOTS_LEFT_WARN) {
         snprintf(label, sizeof(label), "%d LEFT", app->shots_left);
     }
     engrave_below(c, M6_COUNTER_X, M6_COUNTER_Y, M6_LABEL_GAP, label, false, rot);
@@ -738,6 +766,9 @@ static void draw_developing(film_app_t *app, gfx_canvas_t *c, gfx_rect_t vf)
         snprintf(label, sizeof(label), "DEVELOPED");
     } else if (cam->dev_progress) {
         snprintf(label, sizeof(label), "DEVELOPING  %u%%", (unsigned)(cam->dev_progress / 10));
+    } else if (cam->shot == SHOT_REVEAL && app->pending) {
+        /* 小样已出，全尺寸成片在后台排队（连拍停手后才开始冲） */
+        snprintf(label, sizeof(label), "QUEUED  %u", app->pending);
     } else {
         snprintf(label, sizeof(label), "DEVELOPING");
     }
@@ -947,12 +978,11 @@ static bool camera_step(film_app_t *app, uint32_t dt)
     /*
      * 拍摄动画的阶段推进（M6）：
      *   FLASH → HOLD（定格原片 + 进度）→ 小样到了 → REVEAL（原片淡到小样，进度条继续走）
-     *   → 全尺寸冲完（进度 DONE，取景已恢复）且小样看够 → FLY 飞进计数窗
-     * 等待进度时不逐帧重绘：进度事件自己会让界面重画。
+     *   → 小样看够 → FLY 飞进计数窗（全尺寸成片在后台延后冲洗，动画不等它）
+     * 等待小样时不逐帧重绘：事件自己会让界面重画。
      */
     if (cam->shot != SHOT_IDLE) {
         const uint32_t el = app->now - cam->shot_t0;
-        const bool done = cam->dev_progress >= FILM_PROGRESS_DONE;
         switch (cam->shot) {
         case SHOT_FLASH:
             anim = true;
@@ -974,7 +1004,7 @@ static bool camera_step(film_app_t *app, uint32_t dt)
             cam->shot = SHOT_REVEAL;
             cam->shot_t0 = app->now;
             anim = true;
-        } else if ((cam->shot == SHOT_REVEAL && done && el >= SHOT_REVEAL_MS + SHOT_REVIEW_MS) ||
+        } else if ((cam->shot == SHOT_REVEAL && el >= SHOT_REVEAL_MS + SHOT_REVIEW_MS) ||
                    ((cam->shot == SHOT_HOLD || cam->shot == SHOT_REVEAL) && el >= SHOT_STUCK_MS)) {
             cam->shot = SHOT_FLY;
             cam->shot_t0 = app->now;
@@ -1071,12 +1101,13 @@ static void camera_key(film_app_t *app, film_key_t key, bool pressed)
         cam_close(app);
         app_feedback(app, FILM_FEEDBACK_CLICK);
         return;
-    case CAM_OVL_ROLLEND:
     case CAM_OVL_DEVELOPING:
+        break;   /* SX-70 显影页：快门键会结束它并立即拍下一张（cam_fire 里处理） */
+    case CAM_OVL_ROLLEND:
     default:
         return;
     }
-    if (cam->shot != SHOT_IDLE) {
+    if (cam->shot == SHOT_FLASH) {
         return;
     }
     cam->shutter_down = true;

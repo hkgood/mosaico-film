@@ -67,6 +67,7 @@ typedef enum {
     FILM_FILE_RAW,
     FILM_FILE_SCREEN,
     FILM_FILE_THUMB,
+    FILM_FILE_PENDING,      /*!< MF000042.PND：待冲洗标记（见 film_pending.h），冲洗完成后删除 */
 } film_file_kind_t;
 
 typedef struct film_library_t *film_library_handle_t;
@@ -101,6 +102,12 @@ esp_err_t film_library_remove_many(film_library_handle_t handle, const uint32_t 
  */
 esp_err_t film_library_load_pixels(film_library_handle_t handle, uint32_t id, film_file_kind_t kind, uint16_t *buf,
                                    size_t capacity, uint16_t *ret_w, uint16_t *ret_h);
+
+/**
+ * 磁盘上出现过的最大照片编号（含 .PND 与 _RAW.JPG）；没有任何照片文件时返回 0。
+ * 待冲洗的照片还没有 .SCR，不计入索引，分配新编号时必须避开它们。
+ */
+uint32_t film_library_max_id_on_disk(const char *root);
 
 /** 拼出某张照片某个文件的路径 */
 void film_library_path(const char *root, uint32_t id, film_file_kind_t kind, char *buf, size_t len);

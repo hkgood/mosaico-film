@@ -46,6 +46,11 @@ void cam_fire(film_app_t *app);
 void cam_set_ev(film_app_t *app, float ev);
 void cam_open(film_app_t *app, cam_overlay_t overlay);
 void cam_close(film_app_t *app);
+/**
+ * 拍后动画（M6 定格/小样/飞入、SX-70 显影页）被下一次快门或点按打断：立即收尾。
+ * 照片本身不受影响（成片在后台冲洗，冲完照常进相册）。没有动画时什么也不做。
+ */
+void cam_skip_shot_anim(film_app_t *app);
 void cam_toggle_instant(film_app_t *app);
 /** 换到指定机身（皮革合拢动画）；已是该机身时什么也不做 */
 void cam_switch_body(film_app_t *app, bool instant);

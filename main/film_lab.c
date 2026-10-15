@@ -1,5 +1,6 @@
 #include "film_lab.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -12,6 +13,7 @@
 #include "esp_timer.h"
 #include "film_darkroom.h"
 #include "film_meta.h"
+#include "film_pending.h"
 #include "film_perf.h"
 #include "film_storage.h"
 #include "film_studio.h"
@@ -22,7 +24,12 @@
 static const char *TAG = "film_lab";
 
 #define LAB_TASK_STACK          8192
-#define JOB_QUEUE_LEN           2
+#define JOB_QUEUE_LEN           4       /*!< 小样任务（每张新照片一个）与重新冲洗任务 */
+#define PENDING_MAX             3       /*!< 待冲洗队列深度：RAW 已落盘（或在写盘队列里）、还没冲成片的照片 */
+#define QUIET_MS                2500    /*!< 距上一次按快门这么久没动静，才开始全尺寸冲洗（连拍时取景不被冲洗打断） */
+#define ABORT_WAIT_MS           1500    /*!< 冲洗中按快门：最多等多久让暗房放弃当前这张、恢复取景 */
+#define IDLE_POLL_MS            100     /*!< 有待冲洗照片时，暗房多久检查一次"可以开始了吗" */
+#define LAB_ERR_ABORTED         ESP_ERR_NOT_FINISHED    /*!< 冲洗被快门抢占（不是失败：RAW 还在，之后重冲） */
 #define SCREEN_SLOTS            2       /*!< 一张界面在显示、一张给下一次冲洗 */
 #define SCREEN_WAIT_MS          5000
 #define FILTER_MAX_SIDE         FILM_DARKROOM_MAX_EDGE  /*!< film_darkroom 要求滤镜实例至少这么大 */
@@ -55,13 +62,25 @@ static const float k_stage_weight[FILM_STAGE_COUNT] = {
 
 typedef struct {
     film_shot_t shot;
-    bool redevelop;
-    uint8_t *jpeg;              /*!< 拍摄：原片（任务负责释放）；重新冲洗时为 NULL */
+    bool proof_only;            /*!< 新拍照片的小样任务；全尺寸冲洗在待冲洗队列里延后进行 */
+    uint32_t raw_id;            /*!< 全尺寸冲洗读哪张照片的 RAW 文件（0 表示没有，只做小样） */
+    bool copy_raw;              /*!< 另存为新照片：复制一份 RAW（拼 EXIF）给新编号；延后冲洗/续冲的 RAW 已在盘上，不复制 */
+    bool abortable;             /*!< 解码阶段允许被快门抢占（延后冲洗），重新冲洗不抢占 */
+    uint8_t *jpeg;              /*!< 读进内存的原片（任务负责释放）；小样任务为 NULL */
     size_t size;
     film_viewfinder_source_t proof; /*!< 快门前最后一帧取景（uyvy 归任务所有，可能为 NULL） */
     film_tone_stats_t proof_stats;  /*!< 小样原片的通道均值：成片原片对齐到它（见 film_balance.h） */
     film_still_awb_t awb;           /*!< 拍摄所用的白平衡增益（只对新拍的照片有意义） */
+    bool proof_sent;                /*!< 界面已经拿到这张的小样：成片冲完不再发 DEVELOPED */
 } job_t;
+
+/** 待冲洗的新照片：RAW 已交给写盘任务，成片延后冲洗（lock 保护） */
+typedef struct {
+    film_shot_t shot;
+    film_tone_stats_t proof_stats;
+    film_still_awb_t awb;
+    bool proof_sent;
+} pending_t;
 
 struct film_lab_t {
     film_lab_config_t config;
@@ -71,9 +90,18 @@ struct film_lab_t {
 
     /* lock 保护下面这一组 */
     SemaphoreHandle_t lock;
-    bool busy;                  /*!< 已预约或有任务在排队/处理 */
+    bool capturing;             /*!< 已预约快门，原片还没交到（相机在取景→拍照切换中） */
+    bool redeveloping;          /*!< 有重新冲洗在排队/处理（界面在等结果，同一时刻只允许一个） */
+    bool developing;            /*!< 暗房正在冲待冲洗队列里最早的一张 */
+    pending_t pending[PENDING_MAX];
+    size_t pending_count;
+    int64_t activity_us;        /*!< 最近一次预约/交付快门的时刻，用来判断"安静了没有" */
     const char *root;
     bool screen_busy[SCREEN_SLOTS];
+
+    atomic_bool abort_request;      /*!< 快门抢占：延后冲洗的解码阶段看到它就放弃当前这张 */
+    SemaphoreHandle_t aborted;      /*!< 暗房放弃并恢复取景后给出，reserve 据此返回 */
+    bool recovered;                 /*!< 开机续冲扫描做过了（只在暗房任务里使用） */
 
     SemaphoreHandle_t screen_free;  /*!< 空闲屏幕图缓冲计数 */
     uint16_t *screens[SCREEN_SLOTS];
@@ -91,13 +119,6 @@ static void push_event(film_lab_handle_t lab, const film_event_t *ev)
     if (xQueueSend(lab->config.events, ev, 0) != pdTRUE) {
         ESP_LOGW(TAG, "event queue full, dropping type %d", ev->type);
     }
-}
-
-static void set_busy(film_lab_handle_t lab, bool busy)
-{
-    xSemaphoreTake(lab->lock, portMAX_DELAY);
-    lab->busy = busy;
-    xSemaphoreGive(lab->lock);
 }
 
 static const char *get_root(film_lab_handle_t lab)
@@ -146,12 +167,16 @@ typedef struct {
     int blocks_left;
     uint16_t width;
     int64_t decode_us;          /*!< 解码累计耗时（不含重采样），用于耗时分解 */
+    atomic_bool *abort;         /*!< 非 NULL 时每个条带前检查，为真就放弃（快门抢占） */
 } jpeg_source_t;
 
 static esp_err_t jpeg_source_read(void *ctx, const uint8_t **ret_rows, size_t *ret_stride, int *ret_count)
 {
     jpeg_source_t *s = ctx;
     *ret_stride = (size_t)s->width * 3u;
+    if (s->abort && atomic_load(s->abort)) {
+        return LAB_ERR_ABORTED;
+    }
     if (s->blocks_left <= 0) {
         *ret_count = 0;
         return ESP_OK;
@@ -161,6 +186,7 @@ static esp_err_t jpeg_source_read(void *ctx, const uint8_t **ret_rows, size_t *r
     s->decode_us += esp_timer_get_time() - t0;
     ESP_RETURN_ON_FALSE(jerr == JPEG_ERR_OK, ESP_FAIL, TAG, "decode block: %d", jerr);
     --s->blocks_left;
+    taskYIELD();   /* 条带边界让一下：界面与写盘任务不会被整幅解码饿住 */
     *ret_rows = s->block;
     *ret_count = (int)(s->io.out_size / (int)*ret_stride);
     return ESP_OK;
@@ -178,9 +204,11 @@ static void jpeg_source_close(jpeg_source_t *s)
 }
 
 /* 解码器输出 R、G、B 字节顺序，正是 film_darkroom 要的 */
-static esp_err_t jpeg_source_open(jpeg_source_t *s, uint8_t *jpeg, size_t size, film_darkroom_source_t *ret)
+static esp_err_t jpeg_source_open(jpeg_source_t *s, uint8_t *jpeg, size_t size, film_darkroom_source_t *ret,
+                                  atomic_bool *abort)
 {
     memset(s, 0, sizeof(*s));
+    s->abort = abort;
     jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
     config.output_type = JPEG_PIXEL_FORMAT_RGB888;
     config.block_enable = true;
@@ -558,22 +586,23 @@ static esp_err_t run_job(film_lab_handle_t lab, job_t *job, uint16_t *screen, fi
     ESP_RETURN_ON_FALSE(root || shot->preview_only, FILM_ERR_STORAGE_FULL, TAG, "storage unavailable");
 
     esp_err_t err = ESP_OK;
-    if (job->redevelop) {
+    if (job->raw_id) {
         char from[FILM_PATH_MAX];
-        film_library_path(root, shot->source_id, FILM_FILE_RAW, from, sizeof(from));
+        film_library_path(root, job->raw_id, FILM_FILE_RAW, from, sizeof(from));
         err = read_file(from, &job->jpeg, &job->size);
     }
     run_ctx_t run = { .lab = lab, .job = job, .root = root, .timing = timing, .report = !shot->preview_only };
     const film_photo_t id_only = { .id = shot->photo_id };
     /*
-     * 新照片都有自己的一份原片：拍摄时就是快门帧，重新冲洗另存时复制源照片的。
+     * 每张新照片都有自己的一份原片：拍摄时已在 deliver_still 里落盘（延后冲洗、续冲，这里不再写），
+     * 重新冲洗另存为新照片时才复制源照片的一份。
      * 原片文件带 EXIF（含 Orientation），所以写盘用的是"复制 + 拼 EXIF"的一份；解码器仍读原来那份
      * （不依赖解码库对 APP1 段的处理），解码完在 source_done 里释放。
      * 复制失败（内存不足）时退回零拷贝：原片直接交给写盘任务，不带 EXIF，照片不丢。
      */
     uint8_t *const jpeg = job->jpeg;
     const size_t size = job->size;
-    if (err == ESP_OK && !shot->preview_only) {
+    if (err == ESP_OK && !shot->preview_only && job->copy_raw) {
         run.raw = film_meta_make_blob(shot, FILM_META_RAW, jpeg, size);
         if (!run.raw) {
             ESP_LOGW(TAG, "RAW without EXIF (no memory for the copy)");
@@ -591,7 +620,7 @@ static esp_err_t run_job(film_lab_handle_t lab, job_t *job, uint16_t *screen, fi
     jpeg_source_t decoder;
     film_darkroom_source_t source;
     if (err == ESP_OK) {
-        err = jpeg_source_open(&decoder, jpeg, size, &source);
+        err = jpeg_source_open(&decoder, jpeg, size, &source, job->abortable ? &lab->abort_request : NULL);
     }
     if (err == ESP_OK) {
         run.decoder = &decoder;
@@ -611,11 +640,220 @@ static esp_err_t run_job(film_lab_handle_t lab, job_t *job, uint16_t *screen, fi
         jpeg_source_close(&decoder);   /* 冲洗失败时 source_done 没被调用；关闭可重复 */
     }
     film_blob_unref(run.raw);
-    if (!shot->preview_only && root) {
-        const esp_err_t commit = film_writer_commit(lab->writer, root, err == ESP_OK ? &result->meta : &id_only, err);
+    /*
+     * 被快门抢占：解码阶段放弃，这张照片还没有任何文件入队，RAW 与 .PND 都在盘上，什么都不用清理。
+     * 延后冲洗/续冲的失败不应带走 RAW（内存不足、存储满都是可恢复的）；只有原片本身解不开才连 RAW 一起删。
+     */
+    if (!shot->preview_only && root && err != LAB_ERR_ABORTED) {
+        const bool keep_raw = !job->copy_raw && err != ESP_ERR_INVALID_RESPONSE && err != ESP_FAIL;
+        const film_photo_t *meta = err == ESP_OK ? &result->meta : &id_only;
+        const esp_err_t commit = keep_raw ? film_writer_commit_keep_raw(lab->writer, root, meta, err)
+                                          : film_writer_commit(lab->writer, root, meta, err);
         err = err == ESP_OK ? commit : err;
     }
     return err;
+}
+
+/* ---------------------------------------------------------------- 待冲洗队列 */
+
+static size_t pending_count(film_lab_handle_t lab)
+{
+    xSemaphoreTake(lab->lock, portMAX_DELAY);
+    const size_t count = lab->pending_count;
+    xSemaphoreGive(lab->lock);
+    return count;
+}
+
+/** 队尾追加；已满返回 false（预约时已按 PENDING_MAX 限制过，正常不会满） */
+static bool pending_push(film_lab_handle_t lab, const pending_t *item)
+{
+    xSemaphoreTake(lab->lock, portMAX_DELAY);
+    const bool ok = lab->pending_count < PENDING_MAX;
+    if (ok) {
+        lab->pending[lab->pending_count++] = *item;
+    }
+    xSemaphoreGive(lab->lock);
+    return ok;
+}
+
+static void pending_pop_front(film_lab_handle_t lab)
+{
+    xSemaphoreTake(lab->lock, portMAX_DELAY);
+    if (lab->pending_count) {
+        memmove(&lab->pending[0], &lab->pending[1], (lab->pending_count - 1) * sizeof(lab->pending[0]));
+        --lab->pending_count;
+    }
+    xSemaphoreGive(lab->lock);
+}
+
+/** 小样做完后把对齐用的统计与"界面已拿到小样"记进待冲洗项 */
+static void pending_set_proof(film_lab_handle_t lab, uint32_t photo_id, const film_tone_stats_t *stats, bool sent)
+{
+    xSemaphoreTake(lab->lock, portMAX_DELAY);
+    for (size_t i = 0; i < lab->pending_count; ++i) {
+        if (lab->pending[i].shot.photo_id == photo_id) {
+            lab->pending[i].proof_stats = *stats;
+            lab->pending[i].proof_sent = sent;
+        }
+    }
+    xSemaphoreGive(lab->lock);
+}
+
+/** 记下"刚刚有过快门动作"，延后冲洗据此判断安静了没有（lock 保护） */
+static void touch_activity_locked(film_lab_handle_t lab)
+{
+    lab->activity_us = esp_timer_get_time();
+}
+
+/* ---------------------------------------------------------------- 暗房任务 */
+
+/**
+ * 全尺寸冲洗一张（延后的新照片、断电续冲、界面发起的重新冲洗共用）：
+ * 停取景 → run_job → 恢复取景 → 发结果事件。返回 LAB_ERR_ABORTED 表示被快门抢占：
+ * 取景已恢复、没有发任何结果事件，调用者保留这张照片等下次再冲。
+ * proof_sent：界面已经拿到这张的小样（成片冲完只释放屏幕图，不再发 DEVELOPED）。
+ */
+static esp_err_t develop_job(film_lab_handle_t lab, job_t *job)
+{
+    const film_shot_t *shot = &job->shot;
+    const uint32_t event_id = shot->preview_only ? shot->source_id : shot->photo_id;
+    /* 先让取景停下并交出帧缓冲，再开始分配冲洗用的大块内存 */
+    lab->config.on_busy(lab->config.ctx, true);
+    lab_timing_t timing = { .begin = esp_timer_get_time() };
+    film_perf_mark(FILM_PERF_LAB_START);
+    film_perf_mem("lab start (viewfinder stopped)");
+    film_perf_cpu_reset();
+
+    const size_t free_at_start = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    (void)heap_caps_monitor_local_minimum_free_size_start();
+    uint16_t *screen = take_screen(lab);
+    film_studio_result_t result = { 0 };
+    esp_err_t err = screen ? ESP_OK : ESP_ERR_NO_MEM;
+    if (err == ESP_OK) {
+        err = run_job(lab, job, screen, &result, &timing);
+    }
+    log_timing(&timing, esp_timer_get_time());
+    ESP_LOGI(TAG, "job PSRAM peak %u KB (free at start %u KB)",
+             (unsigned)((free_at_start - heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM)) / 1024),
+             (unsigned)(free_at_start / 1024));
+    (void)heap_caps_monitor_local_minimum_free_size_stop();
+    heap_caps_free(job->jpeg);
+    job->jpeg = NULL;
+    film_perf_mark(FILM_PERF_FULL_DONE);
+    film_perf_mem("lab end");
+    film_perf_cpu_report("develop");
+    lab->config.on_busy(lab->config.ctx, false);
+    const char *what = shot->preview_only ? "preview" : (job->copy_raw ? "redevelop" : "develop");
+    ESP_LOGI(TAG, "%s %lu film=%d instant=%d -> %s in %lld ms, PSRAM free %u KB", what, (unsigned long)event_id,
+             (int)shot->film, (int)shot->instant, err == LAB_ERR_ABORTED ? "aborted by shutter" : esp_err_to_name(err),
+             (long long)((esp_timer_get_time() - timing.begin) / 1000),
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
+
+    if (err == LAB_ERR_ABORTED) {
+        if (screen) {
+            film_lab_release_screen(lab, screen);
+        }
+        return err;
+    }
+    if (err == ESP_OK) {
+        /* 有小样时界面已经拿到屏幕图了；成片的屏幕图已复制给写盘任务 */
+        if (job->proof_sent) {
+            film_lab_release_screen(lab, screen);
+        } else {
+            push_developed(lab, shot, event_id, screen, &result);
+        }
+        if (!shot->preview_only) {
+            const film_event_t done = {
+                .type = FILM_EVT_PROGRESS, .photo_id = event_id, .progress = FILM_PROGRESS_DONE,
+            };
+            push_event(lab, &done);
+        }
+    } else {
+        if (screen) {
+            film_lab_release_screen(lab, screen);
+        }
+        const film_event_t failed = { .type = FILM_EVT_SHOT_FAILED, .err = err, .photo_id = event_id };
+        push_event(lab, &failed);
+    }
+    return err;
+}
+
+/** 新拍照片的小样：取景帧冲成屏幕图让界面马上看到胶卷效果；不停取景。随后把对齐统计记进待冲洗项 */
+static void run_proof_job(film_lab_handle_t lab, job_t *job)
+{
+    bool sent = false;
+    if (job->proof.uyvy) {
+        const int64_t t0 = esp_timer_get_time();
+        sent = develop_proof(lab, job) == ESP_OK;
+        heap_caps_free((void *)job->proof.uyvy);
+        job->proof.uyvy = NULL;
+        ESP_LOGI(TAG, "proof %lu: %s in %lld ms", (unsigned long)job->shot.photo_id, sent ? "sent" : "failed",
+                 (long long)((esp_timer_get_time() - t0) / 1000));
+        film_perf_mark(FILM_PERF_PROOF_DONE);
+    }
+    pending_set_proof(lab, job->shot.photo_id, &job->proof_stats, sent);
+}
+
+/** 开机续冲：把上次断电时还没冲完的照片排进待冲洗队列（RAW 与 .PND 都已在盘上） */
+static void recover_pending(film_lab_handle_t lab)
+{
+    const char *root = get_root(lab);
+    if (!root) {
+        return;
+    }
+    film_shot_t shots[PENDING_MAX];
+    const size_t room = PENDING_MAX - pending_count(lab);
+    const size_t n = room ? film_pending_recover(root, shots, room) : 0;
+    for (size_t i = 0; i < n; ++i) {
+        /* 续冲没有小样：界面不在等这张，冲完直接 SAVED 加进相册 */
+        const pending_t item = { .shot = shots[i], .proof_sent = true };
+        if (pending_push(lab, &item)) {
+            ESP_LOGW(TAG, "resuming photo %lu after restart", (unsigned long)shots[i].photo_id);
+        }
+    }
+}
+
+/** 取队首的待冲洗照片开冲。条件不满足（还没安静、RAW 还在写、电量太低）时什么都不做 */
+static void develop_pending(film_lab_handle_t lab)
+{
+    xSemaphoreTake(lab->lock, portMAX_DELAY);
+    const bool quiet = !lab->capturing && !lab->redeveloping &&
+                       esp_timer_get_time() - lab->activity_us >= (int64_t)QUIET_MS * 1000;
+    const bool have = lab->pending_count > 0;
+    const pending_t item = have ? lab->pending[0] : (pending_t){ 0 };
+    xSemaphoreGive(lab->lock);
+    if (!have || !quiet) {
+        return;
+    }
+    /* RAW 要先写完（写盘期间不停取景，等得起）；电量太低就只保住 RAW，下次开机再冲 */
+    if (!film_writer_wait_idle(lab->writer, 0)) {
+        return;
+    }
+    if (lab->config.can_develop && !lab->config.can_develop(lab->config.ctx)) {
+        return;
+    }
+    job_t job = {
+        .shot = item.shot, .raw_id = item.shot.photo_id, .abortable = true,
+        .proof_stats = item.proof_stats, .awb = item.awb, .proof_sent = item.proof_sent,
+    };
+    xSemaphoreTake(lab->lock, portMAX_DELAY);
+    atomic_store(&lab->abort_request, false);
+    lab->developing = true;
+    xSemaphoreGive(lab->lock);
+
+    const esp_err_t err = develop_job(lab, &job);
+
+    xSemaphoreTake(lab->lock, portMAX_DELAY);
+    lab->developing = false;
+    xSemaphoreGive(lab->lock);
+    /* 有快门在等：不管是放弃了还是刚好冲完，取景都已恢复，叫醒它（预约时在锁内置位，这里一定看得到） */
+    if (atomic_exchange(&lab->abort_request, false)) {
+        xSemaphoreGive(lab->aborted);
+    }
+    if (err == LAB_ERR_ABORTED) {
+        return;   /* 保留队首，等下一次安静再冲 */
+    }
+    pending_pop_front(lab);
 }
 
 static void lab_task(void *arg)
@@ -624,83 +862,38 @@ static void lab_task(void *arg)
     bool warmed = false;
     for (;;) {
         job_t job;
-        if (xQueueReceive(lab->jobs, &job, warmed ? portMAX_DELAY : pdMS_TO_TICKS(WARM_UP_IDLE_MS)) != pdTRUE) {
-            if (!warmed) {
-                film_storage_warm_up();
-                warmed = true;
+        const bool have_pending = pending_count(lab) > 0;
+        const bool startup_done = warmed && lab->recovered;
+        const TickType_t wait = have_pending ? pdMS_TO_TICKS(IDLE_POLL_MS)
+                                             : (startup_done ? portMAX_DELAY : pdMS_TO_TICKS(WARM_UP_IDLE_MS));
+        if (xQueueReceive(lab->jobs, &job, wait) == pdTRUE) {
+            warmed = true;   /* 第一张照片自己会触发那次遍历 */
+            if (job.proof_only) {
+                run_proof_job(lab, &job);
+            } else {
+                /* 界面发起的重新冲洗：用户在等结果，不延后、不抢占 */
+                (void)develop_job(lab, &job);
+                xSemaphoreTake(lab->lock, portMAX_DELAY);
+                lab->redeveloping = false;
+                xSemaphoreGive(lab->lock);
             }
             continue;
         }
-        warmed = true;   /* 第一张照片自己会触发那次遍历 */
-        const film_shot_t *shot = &job.shot;
-        const uint32_t event_id = shot->preview_only ? shot->source_id : shot->photo_id;
-        /* 先让取景停下并交出帧缓冲，再开始分配冲洗用的大块内存 */
-        lab->config.on_busy(lab->config.ctx, true);
-        lab_timing_t timing = { .begin = esp_timer_get_time() };
-        film_perf_mark(FILM_PERF_LAB_START);
-        film_perf_mem("lab start (viewfinder stopped)");
-        film_perf_cpu_reset();
-
-        bool proof_sent = false;
-        if (job.proof.uyvy) {
-            proof_sent = develop_proof(lab, &job) == ESP_OK;
-            heap_caps_free((void *)job.proof.uyvy);
-            job.proof.uyvy = NULL;
-            timing.proof_us = esp_timer_get_time() - timing.begin;
-            film_perf_mark(FILM_PERF_PROOF_DONE);
+        if (have_pending) {
+            develop_pending(lab);
+            continue;
         }
-        /* 两张照片的大块缓冲同时放不下：上一张还在写盘就先等它写完 */
-        if (!shot->preview_only) {
-            const int64_t t0 = esp_timer_get_time();
-            (void)film_writer_wait_idle(lab->writer, portMAX_DELAY);
-            timing.wait_us = esp_timer_get_time() - t0;
+        if (!warmed) {
+            warmed = true;
+            film_storage_warm_up();
         }
-
-        const size_t free_at_start = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
-        (void)heap_caps_monitor_local_minimum_free_size_start();
-        uint16_t *screen = take_screen(lab);
-        film_studio_result_t result = { 0 };
-        esp_err_t err = screen ? ESP_OK : ESP_ERR_NO_MEM;
-        if (err == ESP_OK) {
-            err = run_job(lab, &job, screen, &result, &timing);
+        if (!lab->recovered) {
+            lab->recovered = true;
+            xSemaphoreTake(lab->lock, portMAX_DELAY);
+            touch_activity_locked(lab);   /* 刚开机：给用户留出先拍照的时间，续冲晚点开始 */
+            xSemaphoreGive(lab->lock);
+            recover_pending(lab);
         }
-        log_timing(&timing, esp_timer_get_time());
-        ESP_LOGI(TAG, "job PSRAM peak %u KB (free at start %u KB)",
-                 (unsigned)((free_at_start - heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM)) / 1024),
-                 (unsigned)(free_at_start / 1024));
-        (void)heap_caps_monitor_local_minimum_free_size_stop();
-        heap_caps_free(job.jpeg);
-        film_perf_mark(FILM_PERF_FULL_DONE);
-        film_perf_mem("lab end");
-        film_perf_cpu_report("develop");
-        lab->config.on_busy(lab->config.ctx, false);
-        ESP_LOGI(TAG, "%s %lu film=%d instant=%d -> %s in %lld ms, PSRAM free %u KB",
-                 job.redevelop ? (shot->preview_only ? "preview" : "redevelop") : "shoot", (unsigned long)event_id,
-                 (int)shot->film, (int)shot->instant, esp_err_to_name(err),
-                 (long long)((esp_timer_get_time() - timing.begin) / 1000),
-                 (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
-
-        if (err == ESP_OK) {
-            /* 有小样时界面已经拿到屏幕图了；成片的屏幕图已复制给写盘任务 */
-            if (proof_sent) {
-                film_lab_release_screen(lab, screen);
-            } else {
-                push_developed(lab, shot, event_id, screen, &result);
-            }
-            if (!shot->preview_only) {
-                const film_event_t done = {
-                    .type = FILM_EVT_PROGRESS, .photo_id = event_id, .progress = FILM_PROGRESS_DONE,
-                };
-                push_event(lab, &done);
-            }
-        } else {
-            if (screen) {
-                film_lab_release_screen(lab, screen);
-            }
-            const film_event_t failed = { .type = FILM_EVT_SHOT_FAILED, .err = err, .photo_id = event_id };
-            push_event(lab, &failed);
-        }
-        set_busy(lab, false);
     }
 }
 
@@ -716,7 +909,7 @@ void film_lab_set_root(film_lab_handle_t lab, const char *root)
 bool film_lab_busy(film_lab_handle_t lab)
 {
     xSemaphoreTake(lab->lock, portMAX_DELAY);
-    const bool busy = lab->busy;
+    const bool busy = lab->capturing || lab->redeveloping || lab->developing || lab->pending_count > 0;
     xSemaphoreGive(lab->lock);
     return busy;
 }
@@ -726,24 +919,57 @@ bool film_lab_working(film_lab_handle_t lab)
     return film_lab_busy(lab) || !film_writer_wait_idle(lab->writer, 0);
 }
 
+size_t film_lab_pending(film_lab_handle_t lab)
+{
+    return pending_count(lab);
+}
+
 esp_err_t film_lab_reserve(film_lab_handle_t lab)
 {
     esp_err_t err = ESP_OK;
+    bool preempt = false;
     xSemaphoreTake(lab->lock, portMAX_DELAY);
-    if (lab->busy) {
+    if (lab->capturing || lab->redeveloping) {
         err = ESP_ERR_INVALID_STATE;
     } else if (!lab->root) {
         err = FILM_ERR_STORAGE_FULL;
+    } else if (lab->pending_count >= PENDING_MAX) {
+        err = ESP_ERR_INVALID_STATE;    /* 队列满：等暗房冲掉一张 */
     } else {
-        lab->busy = true;
+        lab->capturing = true;
+        touch_activity_locked(lab);
+        preempt = lab->developing;
+        if (preempt) {
+            (void)xSemaphoreTake(lab->aborted, 0);   /* 丢掉旧信号 */
+            atomic_store(&lab->abort_request, true);
+        }
     }
     xSemaphoreGive(lab->lock);
+    if (err == ESP_OK && preempt) {
+        /* 冲洗中按快门：等暗房放弃当前这张并恢复取景。放弃发生在解码阶段（占冲洗的大头）；
+         * 已经过了解码阶段的冲洗没几百毫秒就结束，同样会给出信号 */
+        if (xSemaphoreTake(lab->aborted, pdMS_TO_TICKS(ABORT_WAIT_MS)) != pdTRUE) {
+            ESP_LOGW(TAG, "develop did not yield within %d ms", ABORT_WAIT_MS);
+        }
+    }
     return err;
 }
 
 void film_lab_cancel_reserve(film_lab_handle_t lab)
 {
-    set_busy(lab, false);
+    xSemaphoreTake(lab->lock, portMAX_DELAY);
+    lab->capturing = false;
+    xSemaphoreGive(lab->lock);
+}
+
+/** 拍摄失败：放掉缓冲、报失败、撤销预约（取景从未被冲洗占用，不需要恢复） */
+static void fail_capture(film_lab_handle_t lab, uint32_t photo_id, esp_err_t err, void *jpeg, void *proof_px)
+{
+    heap_caps_free(jpeg);
+    heap_caps_free(proof_px);
+    const film_event_t failed = { .type = FILM_EVT_SHOT_FAILED, .err = err, .photo_id = photo_id };
+    push_event(lab, &failed);
+    film_lab_cancel_reserve(lab);
 }
 
 void film_lab_deliver_still(film_lab_handle_t lab, const film_shot_t *shot, const film_still_t *still,
@@ -751,39 +977,73 @@ void film_lab_deliver_still(film_lab_handle_t lab, const film_shot_t *shot, cons
 {
     uint8_t *jpeg = still->jpeg;
     uint8_t *proof_px = proof ? (uint8_t *)proof->uyvy : NULL;
+    const char *root = get_root(lab);
     if (err != ESP_OK || !jpeg) {
-        heap_caps_free(jpeg);
-        heap_caps_free(proof_px);
-        const film_event_t failed = {
-            .type = FILM_EVT_SHOT_FAILED, .err = err != ESP_OK ? err : ESP_FAIL, .photo_id = shot->photo_id,
-        };
-        push_event(lab, &failed);
-        lab->config.on_busy(lab->config.ctx, false);   /* 没有冲洗可做：放开拍照时暂停的取景 */
-        set_busy(lab, false);
+        fail_capture(lab, shot->photo_id, err != ESP_OK ? err : ESP_FAIL, jpeg, proof_px);
         return;
     }
+    if (!root) {
+        fail_capture(lab, shot->photo_id, FILM_ERR_STORAGE_FULL, jpeg, proof_px);
+        return;
+    }
+    /*
+     * 原片先落盘：带 EXIF 的一份交给写盘任务（写完再写 .PND 续冲标记），内存里只剩这一份拷贝，
+     * 写完即释放；之后全尺寸冲洗从文件读回。拼 EXIF 的缓冲不够时退回零拷贝（不带 EXIF），照片不丢。
+     */
+    film_blob_t *raw = film_meta_make_blob(shot, FILM_META_RAW, jpeg, still->size);
+    if (raw) {
+        heap_caps_free(jpeg);
+    } else {
+        ESP_LOGW(TAG, "RAW without EXIF (no memory for the copy)");
+        raw = film_blob_wrap(jpeg, still->size);   /* 失败时 wrap 已释放 jpeg */
+    }
+    esp_err_t enqueue_err = raw ? ESP_OK : ESP_ERR_NO_MEM;
+    if (enqueue_err == ESP_OK) {
+        enqueue_err = film_writer_raw(lab->writer, root, shot, raw);
+    }
+    if (enqueue_err != ESP_OK) {
+        fail_capture(lab, shot->photo_id, enqueue_err, NULL, proof_px);
+        return;
+    }
+    const pending_t item = { .shot = *shot, .awb = still->awb };
+    if (!pending_push(lab, &item)) {
+        /* 预约时已限制过，不会发生；真发生了就放弃小样，RAW 仍会落盘并在下次开机续冲 */
+        heap_caps_free(proof_px);
+        proof_px = NULL;
+    }
+    xSemaphoreTake(lab->lock, portMAX_DELAY);
+    lab->capturing = false;
+    touch_activity_locked(lab);
+    xSemaphoreGive(lab->lock);
     const film_event_t done = { .type = FILM_EVT_SHUTTER_DONE, .photo_id = shot->photo_id };
     push_event(lab, &done);
-    job_t job = { .shot = *shot, .redevelop = false, .jpeg = jpeg, .size = still->size, .awb = still->awb };
-    if (proof_px) {
-        job.proof = *proof;
+    if (!proof_px) {
+        return;   /* 没有小样：成片延后冲完再给界面屏幕图 */
     }
+    job_t job = { .shot = *shot, .proof_only = true, .proof = *proof };
     if (xQueueSend(lab->jobs, &job, 0) != pdTRUE) {
-        heap_caps_free(jpeg);
         heap_caps_free(proof_px);
-        const film_event_t failed = { .type = FILM_EVT_SHOT_FAILED, .err = ESP_ERR_NO_MEM, .photo_id = shot->photo_id };
-        push_event(lab, &failed);
-        lab->config.on_busy(lab->config.ctx, false);
-        set_busy(lab, false);
     }
 }
 
 esp_err_t film_lab_redevelop(film_lab_handle_t lab, const film_shot_t *shot)
 {
-    ESP_RETURN_ON_ERROR(film_lab_reserve(lab), TAG, "redevelop busy");
-    const job_t job = { .shot = *shot, .redevelop = true };
+    xSemaphoreTake(lab->lock, portMAX_DELAY);
+    esp_err_t err = ESP_OK;
+    if (lab->capturing || lab->redeveloping) {
+        err = ESP_ERR_INVALID_STATE;
+    } else if (!lab->root) {
+        err = FILM_ERR_STORAGE_FULL;
+    } else {
+        lab->redeveloping = true;
+    }
+    xSemaphoreGive(lab->lock);
+    ESP_RETURN_ON_ERROR(err, TAG, "redevelop busy");
+    const job_t job = { .shot = *shot, .raw_id = shot->source_id, .copy_raw = !shot->preview_only };
     if (xQueueSend(lab->jobs, &job, 0) != pdTRUE) {
-        set_busy(lab, false);
+        xSemaphoreTake(lab->lock, portMAX_DELAY);
+        lab->redeveloping = false;
+        xSemaphoreGive(lab->lock);
         return ESP_ERR_INVALID_STATE;
     }
     return ESP_OK;
@@ -847,6 +1107,9 @@ static void lab_free(film_lab_handle_t lab)
     if (lab->screen_free) {
         vSemaphoreDelete(lab->screen_free);
     }
+    if (lab->aborted) {
+        vSemaphoreDelete(lab->aborted);
+    }
     if (lab->jobs) {
         vQueueDelete(lab->jobs);
     }
@@ -866,7 +1129,9 @@ esp_err_t film_lab_start(const film_lab_config_t *config, film_lab_handle_t *ret
     lab->lock = xSemaphoreCreateMutex();
     lab->jobs = xQueueCreate(JOB_QUEUE_LEN, sizeof(job_t));
     lab->screen_free = xSemaphoreCreateCounting(SCREEN_SLOTS, SCREEN_SLOTS);
-    bool ok = lab->lock && lab->jobs && lab->screen_free;
+    lab->aborted = xSemaphoreCreateBinary();
+    atomic_init(&lab->abort_request, false);
+    bool ok = lab->lock && lab->jobs && lab->screen_free && lab->aborted;
     for (int i = 0; ok && i < SCREEN_SLOTS; ++i) {
         lab->screens[i] = heap_caps_calloc(FILM_STUDIO_SCREEN_PIXELS, sizeof(uint16_t), FILE_CAPS);
         ok = lab->screens[i] != NULL;

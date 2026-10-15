@@ -197,8 +197,7 @@ esp_err_t film_camera_capture(film_camera_handle_t cam, const film_shot_t *shot)
         err = ESP_ERR_INVALID_STATE;
     } else {
         cam->pending = *shot;
-        cam->capture_pending = true;
-        cam->hold = true;   /* 拍完后取景保持暂停，等暗房冲洗完再恢复 */
+        cam->capture_pending = true;   /* 拍完取景自动恢复；冲洗被延后，不再占用取景 */
     }
     xSemaphoreGive(cam->lock);
     if (err == ESP_OK) {

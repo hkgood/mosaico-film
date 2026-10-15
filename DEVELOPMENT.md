@@ -133,6 +133,34 @@ components/film_assets
 - A `film_filter_handle_t` is single-owner. Its optional worker joins before
   `film_filter_develop()` returns.
 
+### Deferred development and power-loss resume
+
+Shooting and full-resolution development are decoupled because the darkroom
+needs most of the PSRAM and both cores, so it cannot run beside the camera.
+
+1. Shutter: the camera captures the 2048×1536 JPEG and the lab writes it as
+   `MFnnnnnn_RAW.JPG`, then writes the 36-byte marker `MFnnnnnn.PND`
+   (`film_pending.h`: shot parameters + CRC32). The UI is told `SHOT_DONE` and
+   the viewfinder restarts immediately.
+2. A small proof (screen-size preview) is developed right away so the shot
+   animation has something to show.
+3. The full-resolution develop is queued (`PENDING_MAX`). It starts only after
+   `QUIET_MS` without shutter/UI activity. A new shutter aborts a running
+   develop cooperatively (`abort_request`, checked in the JPEG source read);
+   the job returns to the queue and restarts from the RAW file later.
+4. When the photo is finished the writer removes the `.PND` marker.
+5. On boot `film_pending_recover()` collects valid markers, deletes broken
+   markers / incomplete RAW files and resumes the rest. Finished photos are
+   never touched. The library never reuses a pending id
+   (`film_library_max_id_on_disk()`).
+
+`film_port_t.pending_count` lets the UI show `DEV n` under the counter.
+`film_lab_reserve()` rejects only when the pending queue is full.
+Development is also postponed while the battery is ≤5 % and not charging
+(`can_develop`); the markers keep the work for the next boot or charge.
+Post-shot animations (M6 hold/reveal/fly, SX-70 developing page) do not wait
+for the full-resolution develop and are skipped by the next shutter or tap.
+
 ## Module map
 
 ### Device application

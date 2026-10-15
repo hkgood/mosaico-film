@@ -190,6 +190,8 @@ typedef struct {
     /* 拍摄与重新冲洗（异步，结果走事件）；忙时返回 ESP_ERR_INVALID_STATE */
     esp_err_t (*shoot)(void *ctx, const film_shot_t *shot);
     esp_err_t (*redevelop)(void *ctx, const film_shot_t *shot);
+    /** 已拍下、还没冲出成片的张数（拍冲解耦后后台排队冲洗）；可为 NULL（同步冲洗的平台） */
+    size_t (*pending_count)(void *ctx);
     /** 归还 DEVELOPED 事件里的 screen 缓冲 */
     void (*release_result)(void *ctx, const uint16_t *screen);
 

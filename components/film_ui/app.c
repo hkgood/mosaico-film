@@ -651,6 +651,19 @@ static void update_battery(film_app_t *app)
     }
 }
 
+/** 平台后台冲洗的待冲洗张数变了就重画（计数窗下的标签用它） */
+static void refresh_pending(film_app_t *app)
+{
+    if (!app->port->pending_count) {
+        return;
+    }
+    const unsigned pending = (unsigned)app->port->pending_count(app->port->ctx);
+    if (pending != app->pending) {
+        app->pending = pending;
+        app->dirty = true;
+    }
+}
+
 bool film_app_step(film_app_handle_t app, uint32_t now_ms)
 {
     if (!app) {
@@ -668,6 +681,7 @@ bool film_app_step(film_app_handle_t app, uint32_t now_ms)
     check_long_press(app);
     update_motion(app);
     update_battery(app);
+    refresh_pending(app);
     app_power_step(app);
     update_preview_frame(app);
     if (app->ops->step && app->ops->step(app, dt > 200 ? 200 : dt)) {
