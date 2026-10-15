@@ -19,6 +19,7 @@
 
 #include "esp_err.h"
 #include "film_filter.h"
+#include "film_gfx.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -74,6 +75,12 @@ void film_viewfinder_look_set(film_viewfinder_look_t *dst, const film_look_t *lo
 void film_viewfinder_size(bool instant, bool crop_43, uint16_t *ret_w, uint16_t *ret_h);
 
 /**
+ * 同 film_viewfinder_size，但按握持方向 rot 转正之后的尺寸：横着拿（90°/270°）时宽高对调。
+ * M6 竖着拿裁成 4:3 是 480×360；横着拿取全画幅，转正后也是 480×360（传感器整幅，不裁）。
+ */
+void film_viewfinder_size_rot(bool instant, bool crop_43, gfx_rot_t rot, uint16_t *ret_w, uint16_t *ret_h);
+
+/**
  * 把一帧转换成取景帧，写入 out（紧凑排列，至少 film_viewfinder_size 给出的像素数；缓冲按 FILM_VF_M6_W × FILM_VF_M6_H 个像素分配即可）。
  * 传感器必须是横幅（width >= height），否则返回 ESP_ERR_INVALID_SIZE。
  */
@@ -82,6 +89,13 @@ esp_err_t film_viewfinder_convert(const film_viewfinder_source_t *src, bool inst
 /** 同 film_viewfinder_convert，但带胶卷外观；look 为 NULL 时等同于不带外观 */
 esp_err_t film_viewfinder_convert_look(const film_viewfinder_source_t *src, bool instant, bool crop_43,
                                        const film_viewfinder_look_t *look, uint16_t *out);
+
+/**
+ * 同 film_viewfinder_convert_look，但输出按握持方向 rot 转正（规则与界面 ui_point、暗房成片相同），
+ * 尺寸见 film_viewfinder_size_rot。rot 为 GFX_ROT_0 时与 film_viewfinder_convert_look 逐位一致。
+ */
+esp_err_t film_viewfinder_convert_rot_look(const film_viewfinder_source_t *src, bool instant, bool crop_43,
+                                           gfx_rot_t rot, const film_viewfinder_look_t *look, uint16_t *out);
 
 /**
  * 一行 UYVY → RGB888（R、G、B 字节顺序，与取景同一套 BT.601 有限范围换算），width 须为偶数。

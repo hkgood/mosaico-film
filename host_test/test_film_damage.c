@@ -37,6 +37,7 @@ static uint16_t *s_screen;     /*!< 跨帧保留的整屏画面（和设备上 f
 static uint16_t *s_ref;
 static uint8_t *s_sensor;
 static uint32_t s_now = 1000;
+static const char *s_data_dir;   /*!< 模拟器的数据目录：往里写 accel 文件就是在转动机器 */
 static uint32_t s_seed = 1;
 
 static uint32_t wall_ms(void)
@@ -118,10 +119,109 @@ static void check_live_only(const char *name, gfx_rect_t want)
     printf("%s: live-only redraw matches full redraw\n", name);
 }
 
+/** 像真机一样转动：写重力方向，等传感器平滑与稳定时间过去，握持方向才会真正切换 */
+static void hold(film_app_t *app, gfx_rot_t rot)
+{
+    static const char *const gravity[] = { "0 1 0", "-1 0 0", "0 -1 0", "1 0 0" };
+    char path[256];
+    snprintf(path, sizeof(path), "%s/accel", s_data_dir);
+    FILE *f = fopen(path, "w");
+    CHECK(f);
+    fprintf(f, "%s\n", gravity[rot]);
+    fclose(f);
+    for (int i = 0; i < 400 && app->rot != rot; ++i) {
+        advance(FRAME_MS);
+    }
+    CHECK(app->rot == rot);
+    advance(500);
+}
+
+/**
+ * 整个界面跟着握持方向转：横拿时画面 = 没转的版式整体旋转；取景框的 damage 是旋转后的位置；
+ * 触摸点从屏幕坐标转回用户坐标。与没转时逐像素对比（取景窗口以外），并点一下转过的胶卷窗口。
+ */
+static void check_rotated_ui(film_app_t *app)
+{
+    const gfx_rect_t full = gfx_rect(0, 0, FILM_APP_SCREEN_W, FILM_APP_SCREEN_H);
+    advance(1500);
+    uint16_t *base = malloc(sizeof(uint16_t) * PIXELS);   /* 没转的版式（check_live_only 会覆盖 s_ref，所以另存） */
+    CHECK(base);
+    render(base, full);
+    for (int r = GFX_ROT_90; r <= GFX_ROT_270; ++r) {
+        hold(app, (gfx_rot_t)r);
+        render(s_screen, full);
+        const int n = FILM_APP_SCREEN_W;
+        for (int y = 0; y < n; ++y) {
+            for (int x = 0; x < n; ++x) {
+                int u, v;
+                switch (r) {
+                case GFX_ROT_90:  u = y;         v = n - 1 - x; break;
+                case GFX_ROT_180: u = n - 1 - x; v = n - 1 - y; break;
+                default:          u = n - 1 - y; v = x;         break;
+                }
+                if (v < M6_PLATE_Y) {
+                    continue;                      /* 取景窗口里是实时画面，内容不比 */
+                }
+                if (s_screen[y * n + x] != base[v * n + u]) {
+                    fprintf(stderr, "rot %d: screen (%d,%d) != user (%d,%d)\n", r * 90, x, y, u, v);
+                    exit(1);
+                }
+            }
+        }
+        check_live_only("m6 rotated", gfx_rect_rotate(gfx_rect(0, 0, SCREEN_W, M6_PLATE_Y), SCREEN_W, (gfx_rot_t)r));
+    }
+    free(base);
+    /* 横拿（90°）点转过的胶卷窗口：屏幕坐标 (n-1-v, u) 对应用户坐标 (u, v) */
+    hold(app, GFX_ROT_90);
+    tap(FILM_APP_SCREEN_W - 1 - M6_WINDOW_Y, M6_WINDOW_X);
+    CHECK(app->screen == SCR_FILM);
+    tap(60, 40);
+    CHECK(app->screen == SCR_CAMERA);
+    hold(app, GFX_ROT_0);
+    advance(500);
+}
+
+/** 设置页：按一行只重画这一行（局部重画与整屏重画逐像素一致），保存延迟到停手后 */
+static void check_settings_row(film_app_t *app)
+{
+    const gfx_rect_t full = gfx_rect(0, 0, FILM_APP_SCREEN_W, FILM_APP_SCREEN_H);
+    app_go(app, SCR_SETTINGS);
+    advance(200);
+    render(s_screen, full);
+    const int cx = FILM_APP_SCREEN_W / 2, cy = HEADER_H + 10 + 58 + 26;   /* 第 2 行中央 */
+    const uint8_t before = app->settings.sound_off;
+    for (int phase = 0; phase < 2; ++phase) {     /* 0 按下，1 抬起（切换） */
+        film_app_pointer(app, cx, cy, phase == 0, s_now);
+        s_now += FRAME_MS;
+        CHECK(film_app_step(app, s_now));
+        const gfx_rect_t d = film_app_damage(app);
+        CHECK(d.w > 0 && d.h > 0 && d.h < 80 && d.w < FILM_APP_SCREEN_W);   /* 一行，而不是整屏 */
+        render(s_screen, d);
+        render(s_ref, full);
+        CHECK(memcmp(s_screen, s_ref, sizeof(uint16_t) * PIXELS) == 0);
+    }
+    CHECK(app->settings.sound_off != before);
+    CHECK(app->settings_dirty);          /* 还没写 NVS */
+    advance(1200);
+    CHECK(!app->settings_dirty);         /* 停手后才写 */
+    /* 手指在行内移动不重画 */
+    film_app_pointer(app, cx, cy, true, s_now);
+    s_now += FRAME_MS;
+    (void)film_app_step(app, s_now);
+    film_app_pointer(app, cx + 20, cy + 3, true, s_now);
+    s_now += FRAME_MS;
+    CHECK(!film_app_step(app, s_now));
+    film_app_pointer(app, 0, 400, false, s_now);   /* 抬在别处：取消，不切换 */
+    advance(100);
+    app_go(app, SCR_CAMERA);
+    advance(500);
+}
+
 int main(void)
 {
     char data_dir[] = "/tmp/film_damage_XXXXXX";
     CHECK(mkdtemp(data_dir));
+    s_data_dir = data_dir;
     const film_port_pc_config_t pc = {
         .data_dir = data_dir, .sensor_ppm = FILM_TEST_SENSOR, .assets_path = FILM_TEST_ASSETS,
     };
@@ -136,6 +236,10 @@ int main(void)
     CHECK(app->screen == SCR_CAMERA && !app->settings.instant);
 
     check_live_only("m6", gfx_rect(0, 0, SCREEN_W, M6_PLATE_Y));
+
+    check_rotated_ui(app);
+    check_live_only("m6", gfx_rect(0, 0, SCREEN_W, M6_PLATE_Y));
+    check_settings_row(app);
 
     /* 全屏胶卷页不显示取景；返回后取景照常只重画取景框 */
     tap(M6_WINDOW_X, M6_WINDOW_Y);

@@ -198,8 +198,21 @@ static void toggle(film_app_t *app, int row)
         s->screen_timeout = (uint8_t)((s->screen_timeout + 1) % FILM_SCREEN_TIMEOUT_LEVELS);
         break;
     }
-    app_save_settings(app);
+    app_save_settings_later(app);   /* NVS 同步写会卡住这一帧，合并到停手后再写 */
+    app_invalidate(app, row_rect(row));
     app_feedback(app, FILM_FEEDBACK_LEVER);   /* 刚关掉的那一项自然不响 */
+}
+
+/** 按下的那一行（或返回键所在的页头）要重画：设置页一次只重画、只送屏这一小块 */
+static void invalidate_pressed(film_app_t *app)
+{
+    const settings_page_state_t *p = &app->settings_page;
+    if (p->pressed >= 0) {
+        app_invalidate(app, row_rect(p->pressed));
+    }
+    if (p->back_down) {
+        app_invalidate(app, gfx_rect(0, 0, SCREEN_W, HEADER_H));
+    }
 }
 
 /*
@@ -213,6 +226,7 @@ static void settings_gesture(film_app_t *app, const gesture_t *g)
     case GEST_PRESS:
         p->back_down = g->y < HEADER_H && ui_back_hit(g->x, g->y);
         p->pressed = p->back_down ? -1 : (int8_t)row_at(g->x, g->y);
+        invalidate_pressed(app);
         break;
     case GEST_RELEASE:
         if (p->back_down && g->y < HEADER_H && ui_back_hit(g->x, g->y)) {
@@ -221,6 +235,7 @@ static void settings_gesture(film_app_t *app, const gesture_t *g)
         } else if (p->pressed >= 0 && p->pressed == row_at(g->x, g->y)) {
             toggle(app, p->pressed);
         }
+        invalidate_pressed(app);   /* 按下态要擦掉（页面已切走时这是无害的） */
         p->pressed = -1;
         p->back_down = false;
         break;
@@ -255,4 +270,5 @@ const screen_ops_t g_screen_settings = {
     .gesture = settings_gesture,
     .event = settings_event,
     .key = app_key_back_to_camera,
+    .own_damage = true,   /* 按一行只重画这一行，见 invalidate_pressed */
 };

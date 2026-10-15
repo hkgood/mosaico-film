@@ -190,8 +190,8 @@ static void intro_tick(esp_gsp_handle_t ui, struct film_shell_t *s)
 static void apply_pointer(struct film_shell_t *s, int x, int y, bool pressed)
 {
     if (s->app) {
+        /* 触摸有没有改变画面由界面自己判断（film_app_step 的返回值与 film_app_damage）；这里不再强制整屏重画 */
         film_app_pointer(s->app, x, y, pressed, s->config.now_ms());
-        s->dirty = true;
     }
 }
 

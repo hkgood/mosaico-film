@@ -150,28 +150,13 @@ void cam_load_new_roll(film_app_t *app, bool change_film)
     }
 }
 
-/** M6 当前取景范围下的取景帧尺寸：4:3 裁切 480×360，全画幅 3:4 竖幅 270×360 */
-static void m6_view_dims(const film_app_t *app, int *ret_w, int *ret_h)
+/**
+ * 这帧取景是否是 M6 取景窗口的尺寸。取景帧已按握持方向转正，无论竖拿裁 4:3 还是横拿整幅，
+ * 在用户坐标里都是 480×360 的横幅（切换握持方向的瞬间可能还有旧尺寸的帧）。
+ */
+static bool m6_frame_fits(int w, int h)
 {
-    *ret_w = app->settings.crop_43 ? FILM_VF_M6_W : FILM_VF_M6_FULL_W;
-    *ret_h = app->settings.crop_43 ? FILM_VF_M6_H : FILM_VF_M6_FULL_H;
-}
-
-/** 这帧取景是否就是当前取景范围的尺寸（切换取景范围的瞬间可能还有旧尺寸的帧） */
-static bool m6_frame_fits(const film_app_t *app, int w, int h)
-{
-    int vw, vh;
-    m6_view_dims(app, &vw, &vh);
-    return w == vw && h == vh;
-}
-
-/** 取景窗口里画面所在的矩形：4:3 裁切占满窗口；全画幅 3:4 竖幅居中，两侧留黑 */
-static gfx_rect_t m6_image_rect(const film_app_t *app, gfx_rect_t window)
-{
-    int vw, vh;
-    m6_view_dims(app, &vw, &vh);
-    const int w = window.h * vw / vh;
-    return w >= window.w ? window : gfx_rect(window.x + (window.w - w) / 2, window.y, w, window.h);
+    return w == FILM_VF_M6_W && h == FILM_VF_M6_H;
 }
 
 void cam_skip_shot_anim(film_app_t *app)
@@ -226,7 +211,7 @@ void cam_fire(film_app_t *app)
         .film = (film_id_t)app->settings.film,
         .exposure_ev = cam->ev,
         .instant = app->settings.instant != 0,
-        .crop_43 = app->settings.crop_43 != 0,
+        .crop_43 = app_crop_43(app),     /* 竖拿裁 4:3（1.0 的方式），横拿整幅全像素 */
         .date_stamp = app->settings.date_stamp && has_time,
         .rot = app->rot,
         .seed = app_random(app),
@@ -246,7 +231,6 @@ void cam_fire(film_app_t *app)
     cam->shot_pending_rollend = app->settings.frame >= ROLL_FRAMES;
     cam->shot = SHOT_FLASH;
     cam->shot_t0 = app->now;
-    cam->shot_rot = shot.rot;
     cam->dev_id = shot.photo_id;
     cam->dev_ready = false;
     cam->dev_progress = 0;
@@ -254,7 +238,7 @@ void cam_fire(film_app_t *app)
         cam->dev_done_at = 0;
         cam->dev_emerge_t0 = app->now + SHOT_FLASH_MS;
         cam_open(app, CAM_OVL_DEVELOPING);
-    } else if (app->frame && m6_frame_fits(app, app->frame->width, app->frame->height)) {
+    } else if (app->frame && m6_frame_fits(app->frame->width, app->frame->height)) {
         memcpy(cam->frozen, app->frame->pixels, sizeof(uint16_t) * app->frame->width * app->frame->height);
         cam->frozen_w = app->frame->width;
         cam->frozen_h = app->frame->height;
@@ -712,36 +696,14 @@ static void draw_m6_controls(film_app_t *app, gfx_canvas_t *c)
 }
 
 /**
- * 把转正后的屏幕成片转回取景方向，写成 vw×vh（与取景帧逐像素对齐，便于淡入对比）。
- * 映射规则与 ui_point 相同；成片与取景尺寸不同（竖拿、旧照片）时最近邻缩放。
+ * 把转正后的成片缩放成 vw×vh（与取景帧逐像素对齐，便于淡入对比）。
+ * 取景帧已转到用户方向，成片本来就是正的，只需最近邻缩放（旧照片、全画幅与取景尺寸可能不同）。
  */
-static void print_to_view(const uint16_t *src, int w, int h, gfx_rot_t rot, int vw, int vh, uint16_t *dst)
+static void print_to_view(const uint16_t *src, int w, int h, int vw, int vh, uint16_t *dst)
 {
-    const bool swap = rot == GFX_ROT_90 || rot == GFX_ROT_270;
-    const int uw = swap ? vh : vw;      /* 转正后（用户方向）的虚拟画幅 */
-    const int uh = swap ? vw : vh;
     for (int y = 0; y < vh; ++y) {
         for (int x = 0; x < vw; ++x) {
-            int u, v;
-            switch (rot) {
-            case GFX_ROT_90:
-                u = y;
-                v = vw - 1 - x;
-                break;
-            case GFX_ROT_180:
-                u = vw - 1 - x;
-                v = vh - 1 - y;
-                break;
-            case GFX_ROT_270:
-                u = vh - 1 - y;
-                v = x;
-                break;
-            default:
-                u = x;
-                v = y;
-                break;
-            }
-            dst[y * vw + x] = src[(v * h / uh) * w + u * w / uw];
+            dst[y * vw + x] = src[(y * h / vh) * w + x * w / vw];
         }
     }
 }
@@ -827,10 +789,7 @@ static void render_m6(film_app_t *app, gfx_canvas_t *c)
 {
     const cam_state_t *cam = &app->cam;
     const gfx_rect_t vf = gfx_rect(0, 0, SCREEN_W, M6_PLATE_Y);
-    const gfx_rect_t img = m6_image_rect(app, vf);      /* 全画幅时窗口两侧留黑 */
-    if (img.w < vf.w) {
-        gfx_fill(c, vf, COLOR_BLACK, 255);
-    }
+    const gfx_rect_t img = vf;      /* 取景帧总是 4:3 横幅，占满窗口 */
     if (cam->shot == SHOT_FLASH) {
         gfx_fill(c, vf, COLOR_BLACK, 255);
     } else if ((cam->shot == SHOT_HOLD || cam->shot == SHOT_REVEAL) && cam->frozen_w) {
@@ -1125,9 +1084,8 @@ static void m6_event(film_app_t *app, const film_event_t *ev)
         return;
     }
     if (ev->type == FILM_EVT_DEVELOPED && !ev->preview && ev->screen && ev->width && ev->height) {
-        int vw, vh;
-        m6_view_dims(app, &vw, &vh);
-        print_to_view(ev->screen, ev->width, ev->height, cam->shot_rot, vw, vh, cam->dev_print);
+        const int vw = FILM_VF_M6_W, vh = FILM_VF_M6_H;
+        print_to_view(ev->screen, ev->width, ev->height, vw, vh, cam->dev_print);
         cam->dev_w = (uint16_t)vw;
         cam->dev_h = (uint16_t)vh;
         cam->dev_ready = true;

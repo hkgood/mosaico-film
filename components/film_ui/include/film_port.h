@@ -41,15 +41,15 @@ extern "C" {
 /** 剩余张数不超过这个值时，相机计数窗下的标签由 ROLL 换成 "N LEFT" */
 #define FILM_SHOTS_LEFT_WARN 99
 
-/** 取景尺寸：M6 全画幅为 3:4 竖幅（默认）或 4:3 横幅（裁切），SX-70 为方形 */
+/** 取景尺寸：M6 4:3 横幅（竖着拿时裁切）或全画幅（横着拿时），SX-70 为方形 */
 #define FILM_VF_M6_W 480
 #define FILM_VF_M6_H 360
 /**
- * M6 全画幅取景（取景方向 3:4 竖幅）：屏幕上取景窗口高 360，3:4 的画面宽 270，在窗口里居中（两侧留黑）。
- * 缓冲按 FILM_VF_M6_W × FILM_VF_M6_H 个像素分配即可通用。
+ * M6 全画幅取景（取景方向 3:4 竖幅，传感器整幅）：横着拿时界面整体转 90°，它按握持方向转正后
+ * 正好占满 480×360 的取景窗口。像素数与 FILM_VF_M6_W × FILM_VF_M6_H 相同，缓冲通用。
  */
-#define FILM_VF_M6_FULL_W 270
-#define FILM_VF_M6_FULL_H 360
+#define FILM_VF_M6_FULL_W 360
+#define FILM_VF_M6_FULL_H 480
 #define FILM_VF_SX_W 360
 #define FILM_VF_SX_H 360
 
@@ -66,7 +66,8 @@ typedef struct {
     film_id_t film;
     float exposure_ev;
     bool instant;
-    bool crop_43;       /*!< M6 的取景范围：false 全画幅（默认）、true 4:3 裁切；instant 时忽略 */
+    bool crop_43;       /*!< M6 的取景范围：true 4:3 裁切（竖着拿）、false 全画幅（横着拿）；instant 时忽略 */
+    gfx_rot_t rot;      /*!< 握持方向：取景帧按它转正，输出的就是用户看到的方向 */
     bool film_look;     /*!< 取景带胶卷色调（只有曲线、饱和度、单色；不加颗粒、红晕、暗角、漏光），默认关 */
 } film_preview_config_t;
 

@@ -888,3 +888,57 @@ void gfx_text_engraved(gfx_canvas_t *c, const gfx_text_style_t *style, int x, in
     }
     draw_text(c, style, x, y, utf8, 0, 0, style->color, style->alpha);
 }
+
+/* ---------------------------------------------------------------- 整体旋转 */
+
+gfx_rect_t gfx_rect_rotate(gfx_rect_t r, int n, gfx_rot_t rot)
+{
+    switch (rot) {
+    case GFX_ROT_90:
+        return gfx_rect(n - r.y - r.h, r.x, r.h, r.w);
+    case GFX_ROT_180:
+        return gfx_rect(n - r.x - r.w, n - r.y - r.h, r.w, r.h);
+    case GFX_ROT_270:
+        return gfx_rect(r.y, n - r.x - r.w, r.h, r.w);
+    default:
+        return r;
+    }
+}
+
+#define ROTATE_TILE 16
+
+void gfx_rotate_copy(gfx_canvas_t *c, const uint16_t *src, int stride, int n, gfx_rect_t user_rect, gfx_rot_t rot)
+{
+    /* 目标矩形（屏幕坐标）与画布裁剪求交 */
+    gfx_rect_t clipped_user = user_rect;
+    const int ux0 = imax(user_rect.x, 0), uy0 = imax(user_rect.y, 0);
+    const int ux1 = imin(user_rect.x + user_rect.w, n), uy1 = imin(user_rect.y + user_rect.h, n);
+    if (ux1 <= ux0 || uy1 <= uy0) {
+        return;
+    }
+    clipped_user = gfx_rect(ux0, uy0, ux1 - ux0, uy1 - uy0);
+    const gfx_rect_t d = gfx_rect_rotate(clipped_user, n, rot);
+    int x0, y0, x1, y1;
+    if (!clip_span(c, d, &x0, &y0, &x1, &y1)) {
+        return;
+    }
+    for (int ty = y0; ty < y1; ty += ROTATE_TILE) {
+        const int ye = imin(ty + ROTATE_TILE, y1);
+        for (int tx = x0; tx < x1; tx += ROTATE_TILE) {
+            const int xe = imin(tx + ROTATE_TILE, x1);
+            for (int y = ty; y < ye; ++y) {
+                uint16_t *dst = c->pixels + (size_t)y * c->stride;
+                for (int x = tx; x < xe; ++x) {
+                    int u, v;
+                    switch (rot) {
+                    case GFX_ROT_90:    u = y;         v = n - 1 - x; break;
+                    case GFX_ROT_180:   u = n - 1 - x; v = n - 1 - y; break;
+                    case GFX_ROT_270:   u = n - 1 - y; v = x;         break;
+                    default:            u = x;         v = y;         break;
+                    }
+                    dst[x] = src[(size_t)v * stride + u];
+                }
+            }
+        }
+    }
+}

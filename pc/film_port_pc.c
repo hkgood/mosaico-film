@@ -438,6 +438,40 @@ static void pc_release_result(void *ctx, const uint16_t *screen)
 
 /* ---------------------------------------------------------------- 取景 */
 
+/**
+ * 取景帧转到用户方向（真机在 film_viewfinder_convert_rot_look 里一步完成）：
+ * 取景方向的像素 (x, y) 在转 90° 后落到 (y, w-1-x)，规则与 film_viewfinder.c 一致。
+ */
+static void rotate_to_hold(uint16_t *pixels, int *w, int *h, gfx_rot_t rot)
+{
+    if (rot == GFX_ROT_0) {
+        return;
+    }
+    const int vw = *w, vh = *h;
+    uint16_t *copy = malloc(sizeof(uint16_t) * vw * vh);
+    if (!copy) {
+        return;
+    }
+    memcpy(copy, pixels, sizeof(uint16_t) * vw * vh);
+    const int ow = rot == GFX_ROT_180 ? vw : vh;
+    for (int y = 0; y < vh; ++y) {
+        for (int x = 0; x < vw; ++x) {
+            int dx, dy;
+            switch (rot) {
+            case GFX_ROT_90:  dx = y;           dy = vw - 1 - x; break;
+            case GFX_ROT_180: dx = vw - 1 - x;  dy = vh - 1 - y; break;
+            default:          dx = vh - 1 - y;  dy = x;          break;   /* GFX_ROT_270 */
+            }
+            pixels[dy * ow + dx] = copy[y * vw + x];
+        }
+    }
+    free(copy);
+    if (rot != GFX_ROT_180) {
+        *w = vh;
+        *h = vw;
+    }
+}
+
 static const film_frame_t *pc_preview_acquire(void *ctx)
 {
     film_port_pc_handle_t p = ctx;
@@ -462,8 +496,10 @@ static const film_frame_t *pc_preview_acquire(void *ctx)
     }
     uint32_t scratch[3 * FILM_DARKROOM_SCREEN_MAX_W];
     film_darkroom_downscale_565(&image, slot->pixels, image.width, image.height, scratch);
+    int fw = image.width, fh = image.height;
+    rotate_to_hold(slot->pixels, &fw, &fh, p->preview_cfg.rot);
     slot->frame = (film_frame_t) {
-        .pixels = slot->pixels, .width = image.width, .height = image.height, .seq = ++p->preview_seq,
+        .pixels = slot->pixels, .width = fw, .height = fh, .seq = ++p->preview_seq,
     };
     film_darkroom_release(p->preview_room, &image);
     slot->held = true;

@@ -152,6 +152,11 @@ typedef struct {
      * 取景帧以外的一切都不能依赖帧内容。NULL 表示本页不显示取景
      */
     gfx_rect_t (*live_rect)(const film_app_t *app);
+    /**
+     * 本页的手势处理自己用 app_invalidate 标出变化的区域，手势本身不再让整页重画。
+     * 页面静态、一次只变一小块（设置页的一行）时用：只重画、只送屏这一小块。
+     */
+    bool own_damage;
 } screen_ops_t;
 
 /* 持久化设置见 film_settings.h */
@@ -208,7 +213,6 @@ typedef struct {
 
     shot_phase_t shot;
     uint32_t shot_t0;
-    gfx_rot_t shot_rot;         /*!< 按快门时的握持方向（成片按它转正） */
     uint16_t *frozen;           /*!< 快门瞬间的取景定格（480×360） */
     uint16_t frozen_w, frozen_h;
     bool shot_pending_rollend;
@@ -345,6 +349,10 @@ struct film_app_t {
     uint32_t frame_no;
     bool dirty;
     bool live_dirty;        /*!< 只有取景帧换了：重画 ops->live_rect 就够 */
+    bool settings_dirty;    /*!< 有延迟保存的设置还没写 */
+    uint32_t settings_save_at;
+    bool rect_dirty;        /*!< 页面用 app_invalidate 标了局部变化：重画 dirty_rect 就够 */
+    gfx_rect_t dirty_rect;
     gfx_rect_t damage;      /*!< 上次 step 判定要重画的区域（film_app_damage） */
 
     screen_id_t screen;
@@ -365,8 +373,13 @@ struct film_app_t {
         float vx, vy;
     } touch;
 
-    /* 姿态：横竖、水平仪、摇一摇 */
+    /*
+     * 姿态：横竖、水平仪、摇一摇。
+     * rot 是真实的握持方向。取景页上整个界面跟着它转：先按"用户坐标"（没转的版式）画进 ui_buf，
+     * 再整体旋转到屏幕（film_app_render）。画界面的代码因此一律按没转处理：画的时候 rot 临时为 0。
+     */
     gfx_rot_t rot;
+    uint16_t *ui_buf;           /*!< 480×480 用户坐标缓冲（创建时分配，只在取景页横拿/倒拿时用） */
     gfx_rot_t rot_candidate;
     uint32_t rot_candidate_since;
     float gravity[3];
@@ -437,10 +450,31 @@ void app_toast_error(film_app_t *app, esp_err_t err);
 /** 重新读取存储剩余空间并刷新 shots_left（启动、存储变化、保存完成时调用） */
 void app_refresh_shots_left(film_app_t *app);
 void app_feedback(film_app_t *app, film_feedback_t kind);
+/** 立刻写入设置（拍照计数等不能丢的变化用）；同时带走还没写的延迟保存 */
 void app_save_settings(film_app_t *app);
+/**
+ * 延迟写入设置：开关、胶卷切换这类交互里不要同步写 NVS（会卡住界面线程的这一帧），
+ * 合并到最后一次修改后 SETTINGS_SAVE_DELAY_MS 才写；离开页面、退出时也会补写。
+ */
+void app_save_settings_later(film_app_t *app);
+/** 标出页面上需要重画的一块（用户坐标）；与 screen_ops_t.own_damage 配合 */
+void app_invalidate(film_app_t *app, gfx_rect_t rect);
 uint32_t app_random(film_app_t *app);
-/** 当前取景参数（胶卷、曝光、机身）变化后通知平台 */
+/** 当前取景参数（胶卷、曝光、机身、握持方向）变化后通知平台 */
 void app_update_preview(film_app_t *app);
+/** 取景页的界面此刻是转过的（横拿或倒拿）：触摸、绘制、损坏区域都要在屏幕与用户坐标之间换算 */
+static inline bool ui_rotated(const film_app_t *app)
+{
+    return app->screen == SCR_CAMERA && app->rot != GFX_ROT_0;
+}
+/**
+ * M6 的取景范围由握持方向决定：竖着拿（0°/180°）裁成 4:3 横幅（与 1.0 一致），
+ * 横着拿（90°/270°）取传感器整幅 —— 转正后同样是 4:3 的横幅，但是完整像素。
+ */
+static inline bool app_crop_43(const film_app_t *app)
+{
+    return app->rot == GFX_ROT_0 || app->rot == GFX_ROT_180;
+}
 /** 取缩略图（未加载时排队加载，返回 NULL） */
 const thumb_slot_t *app_thumb(film_app_t *app, uint32_t id);
 /** 照片总字节数（分享页显示） */

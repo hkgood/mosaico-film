@@ -15,6 +15,8 @@
 #define film_viewfinder_convert_look  vf_test_convert_look
 #define film_viewfinder_look_set      vf_test_look_set
 #define film_viewfinder_window_43     vf_test_window_43
+#define film_viewfinder_size_rot      vf_test_size_rot
+#define film_viewfinder_convert_rot_look vf_test_convert_rot_look
 #include "../components/film_darkroom/film_viewfinder.c"
 
 #include <stdio.h>
@@ -281,6 +283,72 @@ static void check_look_frames(void)
     free(want);
 }
 
+/* ---------------------------------------------------------------- 握持方向 */
+
+/**
+ * 按握持方向转正的取景帧 == 把不转的取景帧按 ui_unrot_vec 的规则搬一遍：
+ *   0°: (u, v) = (x, y)   90°: (u, v) = (y, vw-1-x)   180°: (vw-1-x, vh-1-y)   270°: (vh-1-y, x)
+ * 另外：M6 竖着拿裁 4:3、横着拿全画幅，转正后都是 480×360（全画幅的取景方向是 360×480）。
+ */
+static void check_rotation(void)
+{
+    const size_t stride = SENSOR_W * 2u + PAD_BYTES;
+    uint8_t *uyvy = malloc(stride * SENSOR_H);
+    uint16_t *plain = malloc(sizeof(uint16_t) * FILM_VF_M6_W * FILM_VF_M6_H);
+    uint16_t *rotated = malloc(sizeof(uint16_t) * FILM_VF_M6_W * FILM_VF_M6_H);
+    CHECK(uyvy && plain && rotated);
+    random_frame(uyvy, stride * SENSOR_H, 0x0A07u);
+    const film_viewfinder_source_t src = { .uyvy = uyvy, .width = SENSOR_W, .height = SENSOR_H, .stride = stride };
+
+    vf_test_look_set(s_table, NULL);
+    for (int mode = 0; mode < 3; ++mode) {
+        const bool instant = mode == 0, crop_43 = mode == 1;
+        uint16_t vw, vh;
+        vf_test_size(instant, crop_43, &vw, &vh);
+        CHECK(vf_test_convert(&src, instant, crop_43, plain) == ESP_OK);
+        for (int rot = 0; rot < 4; ++rot) {
+            uint16_t uw, uh;
+            vf_test_size_rot(instant, crop_43, (gfx_rot_t)rot, &uw, &uh);
+            const bool swap = rot == GFX_ROT_90 || rot == GFX_ROT_270;
+            CHECK(uw == (swap ? vh : vw) && uh == (swap ? vw : vh));
+            CHECK(vf_test_convert_rot_look(&src, instant, crop_43, (gfx_rot_t)rot, NULL, rotated) == ESP_OK);
+            /* 带恒等外观的结果也一样 */
+            uint16_t *look_out = malloc(sizeof(uint16_t) * uw * uh);
+            CHECK(look_out && vf_test_convert_rot_look(&src, instant, crop_43, (gfx_rot_t)rot, s_table, look_out) == ESP_OK);
+            CHECK(memcmp(look_out, rotated, sizeof(uint16_t) * uw * uh) == 0);
+            free(look_out);
+            for (int y = 0; y < vh; ++y) {
+                for (int x = 0; x < vw; ++x) {
+                    int u = x, v = y;
+                    switch (rot) {
+                    case GFX_ROT_90: u = y; v = vw - 1 - x; break;
+                    case GFX_ROT_180: u = vw - 1 - x; v = vh - 1 - y; break;
+                    case GFX_ROT_270: u = vh - 1 - y; v = x; break;
+                    default: break;
+                    }
+                    if (rotated[(size_t)v * uw + u] != plain[(size_t)y * vw + x]) {
+                        fprintf(stderr, "mode %d rot %d: pixel (%d,%d) landed wrong\n", mode, rot, x, y);
+                        exit(1);
+                    }
+                }
+            }
+        }
+    }
+    /* 竖着拿裁切与横着拿全画幅：转正后同样是 480×360 的取景窗口 */
+    uint16_t w, h;
+    vf_test_size_rot(false, true, GFX_ROT_0, &w, &h);
+    CHECK(w == FILM_VF_M6_W && h == FILM_VF_M6_H);
+    vf_test_size_rot(false, true, GFX_ROT_180, &w, &h);
+    CHECK(w == FILM_VF_M6_W && h == FILM_VF_M6_H);
+    vf_test_size_rot(false, false, GFX_ROT_90, &w, &h);
+    CHECK(w == FILM_VF_M6_W && h == FILM_VF_M6_H);
+    vf_test_size_rot(false, false, GFX_ROT_270, &w, &h);
+    CHECK(w == FILM_VF_M6_W && h == FILM_VF_M6_H);
+    free(uyvy);
+    free(plain);
+    free(rotated);
+}
+
 static void check_look_properties(void)
 {
     for (int film = 0; film < FILM_ID_COUNT; ++film) {
@@ -365,6 +433,7 @@ int main(void)
     check_identity_look();
     check_look_frames();
     check_look_properties();
+    check_rotation();
     free(s_table);
     printf("film_viewfinder_test: OK\n");
     return 0;

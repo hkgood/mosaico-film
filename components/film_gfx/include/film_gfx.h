@@ -157,6 +157,17 @@ void gfx_blit_cover(gfx_canvas_t *c, const uint16_t *pixels, int width, int heig
  */
 void gfx_blit_rotated(gfx_canvas_t *c, const uint16_t *pixels, const uint8_t *alpha, int width, int height,
                       int stride, int cx_q4, int cy_q4, float angle_deg, float scale, uint8_t opacity);
+/**
+ * 把 n×n 的方形矩形按握持方向 rot 整体旋转（以方形的中心转，规则与 ui_point 相同）：
+ * rect 是"用户坐标"里的矩形，返回屏幕上的矩形；传 (4 - rot) % 4 得到反方向（屏幕 → 用户）。
+ */
+gfx_rect_t gfx_rect_rotate(gfx_rect_t rect, int n, gfx_rot_t rot);
+/**
+ * 把 n×n 的用户坐标缓冲 src（RGB565，stride 为每行像素数）里 user_rect 这块，按 rot 旋转后拷到画布。
+ * 只写 canvas->clip 以内；90°/270° 按 16×16 的小块搬，读写都留在缓存里。
+ * 用于"整个界面跟着握持方向转"：界面先画在用户坐标的缓冲里，再整体转到屏幕上。
+ */
+void gfx_rotate_copy(gfx_canvas_t *c, const uint16_t *src, int stride, int n, gfx_rect_t user_rect, gfx_rot_t rot);
 /** 把纹理平铺到矩形内（纹理坐标从 origin 开始），可带圆角 */
 void gfx_tile(gfx_canvas_t *c, const gfx_image_t *tex, gfx_rect_t r, int origin_x, int origin_y, int radius);
 /** A8 遮罩着色，可按 90° 倍数旋转（遮罩左上角放在旋转后矩形的左上角 x, y） */

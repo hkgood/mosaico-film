@@ -73,6 +73,15 @@ void film_viewfinder_size(bool instant, bool crop_43, uint16_t *ret_w, uint16_t 
     }
 }
 
+void film_viewfinder_size_rot(bool instant, bool crop_43, gfx_rot_t rot, uint16_t *ret_w, uint16_t *ret_h)
+{
+    uint16_t w, h;
+    film_viewfinder_size(instant, crop_43, &w, &h);
+    const bool swap = rot == GFX_ROT_90 || rot == GFX_ROT_270;
+    *ret_w = swap ? h : w;
+    *ret_h = swap ? w : h;
+}
+
 static inline uint8_t clamp_u8(int v)
 {
     return (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
@@ -126,7 +135,7 @@ static inline uint16_t look_to_565(const film_viewfinder_look_t *look, int y, in
 }
 
 static inline __attribute__((always_inline)) esp_err_t convert_impl(const film_viewfinder_source_t *src,
-                                                                    bool instant, bool crop_43,
+                                                                    bool instant, bool crop_43, gfx_rot_t rot,
                                                                     const film_viewfinder_look_t *look,
                                                                     uint16_t *out, const vf_mode_t mode)
 {
@@ -157,7 +166,31 @@ static inline __attribute__((always_inline)) esp_err_t convert_impl(const film_v
         for (uint32_t x = 0; x < vw; ++x) {
             const uint32_t row = ((2u * x + 1u) * block_h) / (2u * vw);
             const uint8_t *line = src->uyvy + (size_t)row * stride;
-            uint16_t *dst = out + (size_t)y0 * vw + x;
+            /*
+             * 取景方向的像素 (x, y) 按握持方向转正后的位置（用户坐标 u 向右、v 向下，规则同 ui_unrot_vec）：
+             *   0°: (x, y)  90°: (y, vw-1-x)  180°: (vw-1-x, vh-1-y)  270°: (vh-1-y, x)
+             * 同一组里 y 每加 1，输出下标走 dst_step：0° +uw、90° +1、180° -uw、270° -1，都在缓存里。
+             */
+            uint16_t *dst;
+            ptrdiff_t dst_step;
+            switch (rot) {
+            case GFX_ROT_90:
+                dst = out + (size_t)(vw - 1u - x) * vh + y0;
+                dst_step = 1;
+                break;
+            case GFX_ROT_180:
+                dst = out + (size_t)(vh - 1u - y0) * vw + (vw - 1u - x);
+                dst_step = -(ptrdiff_t)vw;
+                break;
+            case GFX_ROT_270:
+                dst = out + (size_t)x * vh + (vh - 1u - y0);
+                dst_step = -1;
+                break;
+            default:
+                dst = out + (size_t)y0 * vw + x;
+                dst_step = (ptrdiff_t)vw;
+                break;
+            }
             for (uint32_t t = 0; t < rows; ++t) {
                 const uint8_t *pair = line + pair_ofs[t];
                 const int luma = line[luma_ofs[t]];
@@ -168,24 +201,30 @@ static inline __attribute__((always_inline)) esp_err_t convert_impl(const film_v
                 } else {
                     *dst = yuv_to_565(luma, pair[0], pair[2]);
                 }
-                dst += vw;
+                dst += dst_step;
             }
         }
     }
     return ESP_OK;
 }
 
-esp_err_t film_viewfinder_convert_look(const film_viewfinder_source_t *src, bool instant, bool crop_43,
-                                       const film_viewfinder_look_t *look, uint16_t *out)
+esp_err_t film_viewfinder_convert_rot_look(const film_viewfinder_source_t *src, bool instant, bool crop_43,
+                                           gfx_rot_t rot, const film_viewfinder_look_t *look, uint16_t *out)
 {
     if (!src || !src->uyvy || !out) {
         return ESP_ERR_INVALID_ARG;
     }
     if (!look) {
-        return convert_impl(src, instant, crop_43, NULL, out, VF_PLAIN);
+        return convert_impl(src, instant, crop_43, rot, NULL, out, VF_PLAIN);
     }
-    return look->mono ? convert_impl(src, instant, crop_43, look, out, VF_MONO)
-                      : convert_impl(src, instant, crop_43, look, out, VF_LOOK);
+    return look->mono ? convert_impl(src, instant, crop_43, rot, look, out, VF_MONO)
+                      : convert_impl(src, instant, crop_43, rot, look, out, VF_LOOK);
+}
+
+esp_err_t film_viewfinder_convert_look(const film_viewfinder_source_t *src, bool instant, bool crop_43,
+                                       const film_viewfinder_look_t *look, uint16_t *out)
+{
+    return film_viewfinder_convert_rot_look(src, instant, crop_43, GFX_ROT_0, look, out);
 }
 
 esp_err_t film_viewfinder_convert(const film_viewfinder_source_t *src, bool instant, bool crop_43, uint16_t *out)

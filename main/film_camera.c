@@ -485,11 +485,11 @@ static esp_err_t preview_step(film_camera_handle_t cam, const film_preview_confi
             .uyvy = frame.data, .width = frame.width, .height = frame.height, .stride = frame.bytes_per_line,
         };
         const film_viewfinder_source_t src = film_viewfinder_window_43(&full);   /* 16:9 传感器取中间 4:3 */
-        const esp_err_t err = film_viewfinder_convert_look(&src, pv->instant, pv->crop_43, preview_look(cam, pv),
-                                                                  cam->slots[slot].pixels);
+        const esp_err_t err = film_viewfinder_convert_rot_look(&src, pv->instant, pv->crop_43, pv->rot,
+                                                                      preview_look(cam, pv), cam->slots[slot].pixels);
         if (err == ESP_OK) {
             uint16_t vw, vh;
-            film_viewfinder_size(pv->instant, pv->crop_43, &vw, &vh);
+            film_viewfinder_size_rot(pv->instant, pv->crop_43, pv->rot, &vw, &vh);
             publish_slot(cam, slot, vw, vh);
             cam->stat_frames++;
             cam->stat_convert_us += esp_timer_get_time() - t0;

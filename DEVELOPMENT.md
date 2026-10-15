@@ -220,13 +220,36 @@ does not. It still grows with the amount of stored data and blocks every
 filesystem call while it runs; a real fix needs a larger LittleFS block size
 (reformat), which we never do on a device holding the system-update bundle.
 
-### Viewfinder framing
+### Viewfinder framing and whole-UI rotation
 
 The sensor is mounted rotated 90° relative to the screen, so the full sensor
-frame is a 3:4 portrait picture on screen (M6 "full frame", 1536×2048 photo).
-The default is the 4:3 landscape crop (`crop_43 = 1`, 1536×1152 photo); the
-saved photo always has the same framing as the viewfinder, at full resolution.
-`framing_ver` migrates old settings (where `crop_43 == 0` just meant "unset") to 4:3.
+frame is a 3:4 portrait picture on screen. Framing follows how the camera is held
+(no setting; `app_crop_43()`):
+
+- held upright (0°/180°): 4:3 landscape crop, 1536×1152 photo (the 1.0 way);
+- held sideways (90°/270°): the whole sensor frame, which is 4:3 once the UI is
+  turned upright, full-pixel 2048×1536 photo.
+
+On the camera screen the whole UI turns with the hold direction, like a phone.
+`film_app_render` draws the page in *user coordinates* (upright layout, `app->rot`
+temporarily 0) into `ui_buf`, then `gfx_rotate_copy` rotates the damaged part onto
+the screen. Pointer coordinates are rotated back (`film_app_pointer`) and
+`film_app_damage` rotates the damage rect. The camera task converts viewfinder
+frames straight into the user orientation (`film_viewfinder_convert_rot_look`,
+`film_preview_config_t.rot`), so frames are always 480×360 in the window. Pages
+therefore never rotate individual elements; only code outside `render` (pointer,
+damage, preview) knows about the hold direction. `crop_43` in the saved settings
+is no longer used for framing.
+
+### Settings page speed
+
+- Touch no longer forces a full-screen redraw: `film_shell` trusts
+  `film_app_step`/`film_app_damage`. Pages that mark their own damage
+  (`screen_ops_t.own_damage` + `app_invalidate`, used by the settings page) redraw and
+  flush only the row that changed; finger moves that change nothing redraw nothing.
+- Interactive saves (settings toggles, film dial) use `app_save_settings_later`: one
+  NVS write 0.8 s after the last change instead of one per tap. Shot counters still
+  use the immediate `app_save_settings`.
 
 ### Versioning and perf trace
 

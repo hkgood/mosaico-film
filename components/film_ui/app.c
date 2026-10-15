@@ -9,6 +9,7 @@
 
 #include "app_private.h"
 
+#define SETTINGS_SAVE_DELAY_MS 800  /*!< 延迟保存：最后一次修改后多久写 NVS */
 #define GRAVITY_SMOOTHING   0.25f
 #define FLAT_THRESHOLD_G    0.45f   /*!< 平放时（屏幕内重力分量太小）不改变横竖 */
 #define ROT_DOMINANCE       1.35f   /*!< 主轴要比另一轴大这么多倍才切换，形成回差 */
@@ -101,9 +102,33 @@ void app_feedback(film_app_t *app, film_feedback_t kind)
 
 void app_save_settings(film_app_t *app)
 {
+    app->settings_dirty = false;
     if (app->port->settings_save) {
         app->port->settings_save(app->port->ctx, &app->settings, sizeof(app->settings));
     }
+}
+
+void app_save_settings_later(film_app_t *app)
+{
+    app->settings_dirty = true;
+    app->settings_save_at = app->now + SETTINGS_SAVE_DELAY_MS;
+}
+
+void app_invalidate(film_app_t *app, gfx_rect_t rect)
+{
+    if (!app->rect_dirty) {
+        app->dirty_rect = rect;
+        app->rect_dirty = true;
+        return;
+    }
+    /* 并集 */
+    const int x0 = rect.x < app->dirty_rect.x ? rect.x : app->dirty_rect.x;
+    const int y0 = rect.y < app->dirty_rect.y ? rect.y : app->dirty_rect.y;
+    const int x1 = rect.x + rect.w > app->dirty_rect.x + app->dirty_rect.w ? rect.x + rect.w
+                                                                           : app->dirty_rect.x + app->dirty_rect.w;
+    const int y1 = rect.y + rect.h > app->dirty_rect.y + app->dirty_rect.h ? rect.y + rect.h
+                                                                           : app->dirty_rect.y + app->dirty_rect.h;
+    app->dirty_rect = gfx_rect(x0, y0, x1 - x0, y1 - y0);
 }
 
 void app_select_film(film_app_t *app, int film)
@@ -113,7 +138,7 @@ void app_select_film(film_app_t *app, int film)
         return;
     }
     app->settings.film = (uint8_t)film;
-    app_save_settings(app);
+    app_save_settings_later(app);   /* 拨盘连着转时每一格都同步写 NVS 会卡 */
     app_update_preview(app);
     app_feedback(app, FILM_FEEDBACK_DETENT);
 }
@@ -127,7 +152,8 @@ void app_update_preview(film_app_t *app)
         .film = (film_id_t)app->settings.film,
         .exposure_ev = app->cam.ev,
         .instant = app->settings.instant != 0,
-        .crop_43 = app->settings.crop_43 != 0,
+        .crop_43 = app_crop_43(app),
+        .rot = app->rot,
         .film_look = app->settings.film_look != 0,
     };
     app->port->preview_config(app->port->ctx, &cfg);
@@ -281,13 +307,15 @@ static void emit(film_app_t *app, gesture_kind_t kind)
         .horizontal = app->touch.horizontal,
     };
     int du, dv;
-    ui_unrot_vec(app->screen == SCR_CAMERA ? app->rot : GFX_ROT_0, g.dx, g.dy, &du, &dv);
+    ui_unrot_vec(GFX_ROT_0, g.dx, g.dy, &du, &dv);   /* 坐标在 film_app_pointer 里已转到用户坐标 */
     g.du = (int16_t)du;
     g.dv = (int16_t)dv;
     if (app->ops->gesture) {
         app->ops->gesture(app, &g);
     }
-    app->dirty = true;
+    if (!app->ops->own_damage) {
+        app->dirty = true;
+    }
 }
 
 void film_app_pointer(film_app_handle_t app, int x, int y, bool pressed, uint32_t now_ms)
@@ -298,6 +326,16 @@ void film_app_pointer(film_app_handle_t app, int x, int y, bool pressed, uint32_
     app->now = now_ms;
     if (app_power_filter_pointer(app, pressed)) {
         return;
+    }
+    /* 取景页的界面跟着握持方向转了：触摸点从屏幕坐标转回用户坐标，页面里的命中判断都按没转的版式写 */
+    if (ui_rotated(app)) {
+        const int last = SCREEN_W - 1;
+        const int sx = x, sy = y;
+        switch (app->rot) {
+        case GFX_ROT_90:  x = sy;        y = last - sx; break;
+        case GFX_ROT_180: x = last - sx; y = last - sy; break;
+        default:          x = last - sy; y = sx;        break;   /* GFX_ROT_270 */
+        }
     }
     if (pressed && !app->touch.down) {
         app->touch.down = true;
@@ -327,7 +365,7 @@ void film_app_pointer(film_app_handle_t app, int x, int y, bool pressed, uint32_
         const int dy = y - app->touch.y0;
         if (!app->touch.dragging && !app->touch.long_fired && dx * dx + dy * dy > TAP_SLOP_PX * TAP_SLOP_PX) {
             int du, dv;
-            ui_unrot_vec(app->screen == SCR_CAMERA ? app->rot : GFX_ROT_0, dx, dy, &du, &dv);
+            ui_unrot_vec(GFX_ROT_0, dx, dy, &du, &dv);
             app->touch.dragging = true;
             app->touch.horizontal = abs(du) >= abs(dv);
             emit(app, GEST_DRAG_BEGIN);
@@ -429,6 +467,7 @@ static void update_motion(film_app_t *app)
         } else if (app->now - app->rot_candidate_since >= ROT_SETTLE_MS) {
             app->rot = cand;
             app->dirty = true;
+            app_update_preview(app);   /* 取景范围与帧方向随握持方向变（竖拿裁 4:3、横拿整幅） */
         }
         /* 水平仪：用户方向下重力偏离"正下方"的角度 */
         int gu, gv;
@@ -535,13 +574,14 @@ esp_err_t film_app_create(const film_app_config_t *config, film_app_handle_t *re
     app->redev.original = malloc(sizeof(uint16_t) * FILM_VF_M6_W * FILM_VF_M6_H);
     app->redev.result = malloc(sizeof(uint16_t) * FILM_VF_M6_W * FILM_VF_M6_H);
     app->cam.dev_print = malloc(sizeof(uint16_t) * FILM_VF_M6_W * FILM_VF_M6_H);
+    app->ui_buf = malloc(sizeof(uint16_t) * SCREEN_W * SCREEN_H);
     app->share.card = malloc(sizeof(uint16_t) * SHARE_CARD_W * SHARE_CARD_H);
     app->share.media = malloc(sizeof(uint16_t) * SHARE_MEDIA_W * SHARE_MEDIA_H * SHARE_STACK_MAX);
     for (int i = 0; i < 2; ++i) {
         app->cam.stack_px[i] = malloc(sizeof(uint16_t) * CAM_STACK_PRINT_PX * CAM_STACK_PRINT_PX);
     }
     if (!app->thumb_pool || !app->cam.frozen || !app->detail.pixels || !app->redev.original || !app->redev.result ||
-        !app->cam.dev_print || !app->share.card || !app->share.media || !app->cam.stack_px[0] || !app->cam.stack_px[1]) {
+        !app->cam.dev_print || !app->ui_buf || !app->share.card || !app->share.media || !app->cam.stack_px[0] || !app->cam.stack_px[1]) {
         film_app_delete(app);
         return ESP_ERR_NO_MEM;
     }
@@ -571,6 +611,9 @@ void film_app_delete(film_app_handle_t app)
         return;
     }
     app_power_deinit(app);
+    if (app->settings_dirty) {
+        app_save_settings(app);
+    }
     if (app->ops && app->ops->leave) {
         app->ops->leave(app);
     }
@@ -585,6 +628,7 @@ void film_app_delete(film_app_handle_t app)
     free(app->redev.original);
     free(app->redev.result);
     free(app->cam.dev_print);
+    free(app->ui_buf);
     free(app->share.card);
     free(app->share.media);
     free(app->cam.stack_px[0]);
@@ -624,10 +668,13 @@ static void update_preview_frame(film_app_t *app)
 static gfx_rect_t frame_damage(const film_app_t *app)
 {
     const gfx_rect_t full = gfx_rect(0, 0, SCREEN_W, SCREEN_H);
-    if (app->dirty || !app->ops->live_rect) {
+    if (app->dirty) {
         return full;
     }
-    return app->ops->live_rect(app);
+    if (app->rect_dirty) {
+        return app->dirty_rect;   /* 页面自己标的局部变化 */
+    }
+    return app->ops->live_rect ? app->ops->live_rect(app) : full;
 }
 
 /** 定期取平台缓存的电量；电量很低时在取景页提示一次 */
@@ -699,16 +746,59 @@ bool film_app_step(film_app_handle_t app, uint32_t now_ms)
         }
         app->dirty = true;
     }
+    /* 延迟保存到点才写；这时用户多半已经停手，同步写 NVS 的几十毫秒不会卡在操作中间 */
+    if (app->settings_dirty && !app->touch.down && (int32_t)(app->now - app->settings_save_at) >= 0) {
+        app_save_settings(app);
+    }
     app->damage = frame_damage(app);
-    const bool redraw = app_power_redraw(app, app->dirty || app->live_dirty);
+    const bool redraw = app_power_redraw(app, app->dirty || app->live_dirty || app->rect_dirty);
     app->dirty = false;
     app->live_dirty = false;
+    app->rect_dirty = false;
     return redraw;
 }
 
 gfx_rect_t film_app_damage(film_app_handle_t app)
 {
-    return app ? app->damage : gfx_rect(0, 0, SCREEN_W, SCREEN_H);
+    if (!app) {
+        return gfx_rect(0, 0, SCREEN_W, SCREEN_H);
+    }
+    /* 损坏区域是按用户坐标算的（取景框在版式顶部），界面转过时换成屏幕上的位置 */
+    return ui_rotated(app) ? gfx_rect_rotate(app->damage, SCREEN_W, app->rot) : app->damage;
+}
+
+/** 当前页加提示条，画到 canvas（坐标按"当前 app->rot"摆放：转过的界面里 rot 临时为 0） */
+static void render_screen(film_app_t *app, gfx_canvas_t *canvas)
+{
+    app->ops->render(app, canvas);
+    if (app->toast[0]) {
+        const uint32_t left = app->toast_until > app->now ? app->toast_until - app->now : 0;
+        const uint8_t alpha = left > 250 ? 255 : (uint8_t)(left * 255 / 250);
+        const bool camera = app->screen == SCR_CAMERA;
+        const ui_frame_t f = ui_frame(camera && !app->settings.instant ? gfx_rect(0, 0, SCREEN_W, FILM_VF_M6_H)
+                                      : camera ? gfx_rect(60, 0, FILM_VF_SX_W, FILM_VF_SX_H)
+                                               : gfx_rect(0, 52, SCREEN_W, SCREEN_H - 52),
+                                      camera ? app->rot : GFX_ROT_0);
+        ui_toast(canvas, &f, app->toast, alpha);
+    }
+}
+
+/**
+ * 横拿或倒拿时整个取景页跟着转：先按没转的版式画进用户坐标缓冲（只画损坏的那块），
+ * 再把那块旋转拷到屏幕画布。画的时候 rot 临时置 0，页面里所有刻字、图标、取景窗就都不用再各自转。
+ * 取景帧也已按握持方向转正（film_viewfinder_convert_rot_look），所以取景窗里是直接贴图。
+ */
+static void render_rotated(film_app_t *app, gfx_canvas_t *canvas)
+{
+    const gfx_rot_t hold = app->rot;
+    const gfx_rect_t user_clip = gfx_rect_rotate(canvas->clip, SCREEN_W, (gfx_rot_t)((4 - hold) % 4));
+    gfx_canvas_t user;
+    gfx_canvas_init(&user, app->ui_buf, SCREEN_W, SCREEN_H, SCREEN_W);
+    gfx_clip_push(&user, user_clip);
+    app->rot = GFX_ROT_0;
+    render_screen(app, &user);
+    app->rot = hold;
+    gfx_rotate_copy(canvas, app->ui_buf, SCREEN_W, SCREEN_W, user_clip, hold);
 }
 
 void film_app_render(film_app_handle_t app, gfx_canvas_t *canvas)
@@ -721,15 +811,9 @@ void film_app_render(film_app_handle_t app, gfx_canvas_t *canvas)
         gfx_fill(canvas, gfx_rect(0, 0, SCREEN_W, SCREEN_H), 0x000000, 255);
         return;
     }
-    app->ops->render(app, canvas);
-    if (app->toast[0]) {
-        const uint32_t left = app->toast_until > app->now ? app->toast_until - app->now : 0;
-        const uint8_t alpha = left > 250 ? 255 : (uint8_t)(left * 255 / 250);
-        const bool camera = app->screen == SCR_CAMERA;
-        const ui_frame_t f = ui_frame(camera && !app->settings.instant ? gfx_rect(0, 0, SCREEN_W, FILM_VF_M6_H)
-                                      : camera ? gfx_rect(60, 0, FILM_VF_SX_W, FILM_VF_SX_H)
-                                               : gfx_rect(0, 52, SCREEN_W, SCREEN_H - 52),
-                                      camera ? app->rot : GFX_ROT_0);
-        ui_toast(canvas, &f, app->toast, alpha);
+    if (ui_rotated(app)) {
+        render_rotated(app, canvas);
+    } else {
+        render_screen(app, canvas);
     }
 }
