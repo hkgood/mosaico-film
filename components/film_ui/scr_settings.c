@@ -13,9 +13,10 @@
 /* 布局（屏幕坐标）：5 行设置 + 1 张关于卡片 */
 #define ROW_X           24
 #define ROW_W           (SCREEN_W - 2 * ROW_X)
-#define ROW_H           48
-#define ROW_PITCH       54
-#define ROW_TOP         (HEADER_H + 12)
+#define ROW_H           52
+#define ROW_PITCH       58
+#define ROW_TOP         (HEADER_H + 10)
+#define ROW_HIT_SLOP    3           /*!< 行间 6 像素的缝也算点中相邻行，没有"点空"的死区 */
 #define ROW_RADIUS      10
 #define ROW_BG          0x1C1B19U
 #define ROW_BG_DOWN     0x2A2824U
@@ -23,9 +24,9 @@
 #define LEVER_INSET     40          /*!< 拨杆中心到行右边的距离 */
 #define ABOUT_X         36          /*!< 关于卡片收进下方圆角安全区 */
 #define ABOUT_W         (SCREEN_W - 2 * ABOUT_X)
-#define ABOUT_H         88
-#define ABOUT_PAD       16
-#define ABOUT_LINE_H    24
+#define ABOUT_H         72
+#define ABOUT_PAD       12
+#define ABOUT_LINE_H    20
 
 typedef enum {
     ROW_SKIP_BOOT = 0,
@@ -42,13 +43,13 @@ static gfx_rect_t row_rect(int i)
 
 static gfx_rect_t about_rect(void)
 {
-    return gfx_rect(ABOUT_X, ROW_TOP + SETTINGS_ROWS * ROW_PITCH + 4, ABOUT_W, ABOUT_H);
+    return gfx_rect(ABOUT_X, ROW_TOP + SETTINGS_ROWS * ROW_PITCH, ABOUT_W, ABOUT_H);
 }
 
 static int row_at(int x, int y)
 {
     for (int i = 0; i < SETTINGS_ROWS; ++i) {
-        if (ui_hit(row_rect(i), x, y, 0)) {
+        if (ui_hit(row_rect(i), x, y, ROW_HIT_SLOP)) {
             return i;
         }
     }
@@ -109,10 +110,10 @@ static void draw_row(film_app_t *app, gfx_canvas_t *c, int i)
     gfx_fill_round(c, r, ROW_RADIUS, pressed ? ROW_BG_DOWN : ROW_BG, 255);
     gfx_stroke_round(c, r, ROW_RADIUS, 1, ROW_LINE, 255);
     const gfx_text_style_t name = ui_style(&font_jost_m14, UI_TEXT_LINK, 0.08f, COLOR_CREAM, 235, GFX_ALIGN_LEFT, GFX_ROT_0);
-    gfx_text(c, &name, r.x + 16, r.y + 18, k_rows[i].name);
+    gfx_text(c, &name, r.x + 16, r.y + 20, k_rows[i].name);
     const gfx_text_style_t sub =
         ui_style(&font_jost_m10, UI_TEXT_CAPTION, 0.14f, COLOR_MUTED, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
-    gfx_text(c, &sub, r.x + 16, r.y + 34, k_rows[i].sub);
+    gfx_text(c, &sub, r.x + 16, r.y + 37, k_rows[i].sub);
 
     if (i == ROW_SCREEN_OFF) {
         const gfx_text_style_t val =
@@ -126,7 +127,7 @@ static void draw_row(film_app_t *app, gfx_canvas_t *c, int i)
 /** 关于卡片里的一行：左边灰色标签，右边内容 */
 static void draw_about_line(gfx_canvas_t *c, const gfx_rect_t *card, int line, const char *label, const char *value)
 {
-    const int y = card->y + ABOUT_PAD + 6 + line * ABOUT_LINE_H;
+    const int y = card->y + ABOUT_PAD + 8 + line * ABOUT_LINE_H;
     const gfx_text_style_t l =
         ui_style(&font_jost_m10, UI_TEXT_CAPTION, 0.2f, COLOR_MUTED, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
     gfx_text(c, &l, card->x + ABOUT_PAD, y, label);
@@ -197,29 +198,25 @@ static void toggle(film_app_t *app, int row)
     app_feedback(app, FILM_FEEDBACK_LEVER);   /* 刚关掉的那一项自然不响 */
 }
 
+/*
+ * 手指抬起时才生效：按下和抬起落在同一行就切换。比"轻点"宽松——手指略有滑动（超过轻点的 12 像素）
+ * 或按得久一点，只要没离开这一行，也照样切换；原来用 GEST_TAP，稍微一抖就被当成拖动而无反应。
+ */
 static void settings_gesture(film_app_t *app, const gesture_t *g)
 {
     settings_page_state_t *p = &app->settings_page;
     switch (g->kind) {
     case GEST_PRESS:
         p->back_down = g->y < HEADER_H && ui_back_hit(g->x, g->y);
-        p->pressed = (int8_t)row_at(g->x, g->y);
+        p->pressed = p->back_down ? -1 : (int8_t)row_at(g->x, g->y);
         break;
-    case GEST_TAP:
-        if (g->y < HEADER_H) {
-            if (g->x < BACK_HIT_W) {
-                app_feedback(app, FILM_FEEDBACK_CLICK);
-                app_go(app, SCR_CAMERA);
-            }
-            return;
-        }
-        if (p->pressed >= 0 && p->pressed == row_at(g->x, g->y)) {
+    case GEST_RELEASE:
+        if (p->back_down && g->y < HEADER_H && ui_back_hit(g->x, g->y)) {
+            app_feedback(app, FILM_FEEDBACK_CLICK);
+            app_go(app, SCR_CAMERA);
+        } else if (p->pressed >= 0 && p->pressed == row_at(g->x, g->y)) {
             toggle(app, p->pressed);
         }
-        p->pressed = -1;
-        break;
-    case GEST_DRAG_BEGIN:
-    case GEST_RELEASE:
         p->pressed = -1;
         p->back_down = false;
         break;

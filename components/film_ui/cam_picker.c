@@ -16,7 +16,7 @@
 #include "cam_private.h"
 
 #define PICKER_EDGE_PX      36      /*!< 顶边多高范围内按下才算"下拉" */
-#define PICKER_SHEET_H      344     /*!< 面板高度 */
+#define PICKER_SHEET_H      362     /*!< 面板高度 */
 #define PICKER_RADIUS       22
 #define PICKER_OPEN_RATIO   0.38f   /*!< 松手时拉出超过这个比例就展开 */
 #define PICKER_FLING_PX_S   600.0f  /*!< 甩动速度阈值（像素/秒） */
@@ -36,8 +36,9 @@
 
 #define PICKER_VISIBLE_PULL 0.002f  /*!< 展开程度不超过它就当作完全收起，不画面板 */
 
-#define LOOK_ROW_GAP        46      /*!< SETTINGS 入口行：卡片下沿到行顶的距离 */
-#define LOOK_ROW_H          34
+#define LOOK_ROW_GAP        40      /*!< SETTINGS 入口行：卡片下沿到行顶的距离 */
+#define LOOK_ROW_H          52      /*!< 够一根手指按（原来 34 太矮） */
+#define LOOK_HIT_SLOP       12      /*!< 行外再多算这么多像素也算点中 */
 #define PICKER_SETTINGS_CARD 2      /*!< picker_pressed 里 SETTINGS 行的编号（0、1 是两台机身） */
 
 #define HINT_W              34      /*!< 顶边下拉提示条 */
@@ -261,10 +262,10 @@ static void draw_settings_row(film_app_t *app, gfx_canvas_t *c)
     gfx_stroke_round(c, r, CARD_RADIUS, 1, 0x3B3A37, 255);
     const gfx_text_style_t name =
         ui_style(&font_jost_m14, 14, 0.08f, COLOR_CREAM, 230, GFX_ALIGN_LEFT, GFX_ROT_0);
-    gfx_text(c, &name, r.x + 16, r.y + 12, "SETTINGS");
+    gfx_text(c, &name, r.x + 16, r.y + 20, "SETTINGS");
     const gfx_text_style_t sub =
         ui_style(&font_jost_m10, UI_TEXT_CAPTION, 0.16f, COLOR_MUTED, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
-    gfx_text(c, &sub, r.x + 16, r.y + 25, "SOUND  \xC2\xB7  SCREEN  \xC2\xB7  VIEWFINDER  \xC2\xB7  ABOUT");
+    gfx_text(c, &sub, r.x + 16, r.y + 37, "SOUND  \xC2\xB7  SCREEN  \xC2\xB7  VIEWFINDER  \xC2\xB7  ABOUT");
 
     /* 右侧的 > 箭头 */
     const int ax = r.x + r.w - 22;
@@ -382,7 +383,7 @@ bool cam_picker_gesture(film_app_t *app, const gesture_t *g)
     switch (g->kind) {
     case GEST_PRESS:
         cam->picker_pressed = cam->picker_pull > 0.95f ? (int8_t)card_at(cam, g->x, g->y) : -1;
-        if (cam->picker_pressed < 0 && cam->picker_pull > 0.95f && ui_hit(look_rect(cam), g->x, g->y, 4)) {
+        if (cam->picker_pressed < 0 && cam->picker_pull > 0.95f && ui_hit(look_rect(cam), g->x, g->y, LOOK_HIT_SLOP)) {
             cam->picker_pressed = PICKER_SETTINGS_CARD;
         }
         break;
@@ -414,7 +415,7 @@ bool cam_picker_gesture(film_app_t *app, const gesture_t *g)
         break;
     case GEST_TAP: {
         if (cam->picker_pull > 0.95f && cam->picker_pressed == PICKER_SETTINGS_CARD &&
-            ui_hit(look_rect(cam), g->x, g->y, 4)) {
+            ui_hit(look_rect(cam), g->x, g->y, LOOK_HIT_SLOP)) {
             cam->picker_pressed = -1;
             app_feedback(app, FILM_FEEDBACK_CLICK);
             app_go(app, SCR_SETTINGS);   /* 取景页的 enter 会把面板收回去 */

@@ -154,7 +154,14 @@ static void set_battery(script_t *s, const char *value)
     CHECK(f);
     fprintf(f, "%s\n", value);
     fclose(f);
-    wait_ms(s, 1600);
+    /* 平台读文件与界面取读数各有自己的节拍，提示条出现的时刻不固定：
+     * 一旦提示条出现就停（它能活 TOAST_MS），否则最多等 1600 ms */
+    for (int t = 0; t < 1600; t += 100) {
+        wait_ms(s, 100);
+        if (s->app->toast[0] && s->app->battery_warned) {
+            return;
+        }
+    }
 }
 
 /** 只推进不触摸，数 ms 毫秒内有几帧需要重绘 */
@@ -301,33 +308,41 @@ int main(int argc, char **argv)
     CHECK(count_redraws(&s, 600) == 0);
 
     /* 面板底部的 SETTINGS 行 → 设置页：每行一点即切换并保存，回到取景页时面板已收起 */
-    tap(&s, 240, 302);
+    tap(&s, 240, 305);
     wait_ms(&s, 300);
     CHECK(s.app->screen == SCR_SETTINGS);
     snap(&s, "settings_page");
     const film_settings_t before = s.app->settings;
     tap(&s, 240, 100);              /* 跳过开机动画 */
     CHECK(s.app->settings.skip_boot == 1);
-    tap(&s, 240, 154);              /* 声音 */
+    tap(&s, 240, 158);              /* 声音 */
     CHECK(s.app->settings.sound_off == 1);
-    tap(&s, 240, 208);              /* 振动 */
+    tap(&s, 240, 216);              /* 振动 */
     CHECK(s.app->settings.haptic_off == 1);
-    tap(&s, 240, 262);              /* 胶卷取景 */
+    tap(&s, 240, 274);              /* 胶卷取景 */
     CHECK(s.app->settings.film_look == !before.film_look);
-    tap(&s, 240, 316);              /* 关屏时长：30 秒 → 1 分钟 */
+    tap(&s, 240, 332);              /* 关屏时长：30 秒 → 1 分钟 */
     CHECK(s.app->settings.screen_timeout == 1);
     wait_ms(&s, 100);
     snap(&s, "settings_toggled");
     for (int i = 0; i < FILM_SCREEN_TIMEOUT_LEVELS - 1; ++i) {
-        tap(&s, 240, 316);          /* 循环一圈回到默认档 */
+        tap(&s, 240, 332);          /* 循环一圈回到默认档 */
     }
     CHECK(s.app->settings.screen_timeout == 0);
     tap(&s, 240, 100);
-    tap(&s, 240, 154);
-    tap(&s, 240, 208);
-    tap(&s, 240, 262);
+    tap(&s, 240, 158);
+    tap(&s, 240, 216);
+    tap(&s, 240, 274);
     CHECK(memcmp(&s.app->settings, &before, sizeof(before)) == 0);
     tap(&s, 240, 400);              /* 点关于卡片不会切换任何设置 */
+    /* 手指略有滑动（超过轻点阈值）或按得久，只要没离开这一行，抬起时照样切换 */
+    drag(&s, 200, 100, 230, 108, 200);
+    CHECK(s.app->settings.skip_boot == 1);
+    drag(&s, 200, 100, 230, 108, 200);
+    CHECK(s.app->settings.skip_boot == 0);
+    long_press(&s, 240, 158);
+    CHECK(s.app->settings.sound_off == 1);
+    tap(&s, 240, 158);
     CHECK(memcmp(&s.app->settings, &before, sizeof(before)) == 0);
     tap(&s, 40, 30);                /* 返回键 */
     wait_ms(&s, 300);

@@ -198,6 +198,28 @@ skip boot animation, sound, vibration, film viewfinder, screen-off time
 settings before the boot animation to apply mute/vibration and to skip the
 animation; `film_feedback_set_mode` applies them at runtime.
 
+Touch targets: each settings row is a 52 px full-width card and toggles on
+release (a finger that drifts or rests a little still counts as long as it
+stays on the same row). The picker's SETTINGS row is 52 px tall with a 12 px
+hit slop.
+
+### Never touch storage from the render path
+
+The UI thread renders at ~16 fps; any call that takes the LittleFS lock blocks
+it for as long as the lab task holds that lock (allocator warm-up and
+`recover_pending` can hold it for tens of seconds after boot).
+`film_storage_free_bytes()` therefore returns an atomic cache that is refreshed
+at mount, after warm-up and after each saved photo (`film_storage_refresh_free`).
+Do not call `esp_littlefs_blockdev_info` or similar from `port->*` hooks that
+`draw` uses.
+
+### Versioning and perf trace
+
+The firmware version comes from `CONFIG_APP_PROJECT_VER` (`sdkconfig.defaults`)
+and `project(... VERSION ...)` in `CMakeLists.txt`; keep them equal.
+`CONFIG_FILM_PERF_TRACE` (default off) adds periodic timing logs and task
+snapshots; leave it off in release builds because it costs frame time itself.
+
 ## Module map
 
 ### Device application

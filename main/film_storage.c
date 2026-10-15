@@ -6,6 +6,7 @@
 #include "film_storage.h"
 
 #include <errno.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -26,6 +27,9 @@ static const char *TAG = "film_storage";
 #define NAND_MAX_TRANSFER_BYTES 4096
 #define WARM_UP_PATH            FILM_STORAGE_PHOTO_DIR "/.warm"
 #define WARM_UP_BYTES           4096
+
+/* 剩余空间缓存：后台任务写，任何任务读 */
+static atomic_uint_fast64_t s_free_bytes;
 
 /* 单例状态：只在 film_storage_mount 里写（启动阶段由一个任务调用），之后只读 */
 static struct {
@@ -137,6 +141,7 @@ esp_err_t film_storage_mount(void)
     }
     size_t total = 0, used = 0;
     (void)esp_littlefs_blockdev_info(s_nand.blockdev, &total, &used);
+    atomic_store(&s_free_bytes, total > used ? (uint64_t)(total - used) : 0);
     ESP_LOGI(TAG, "NAND mounted at %s, used %u / %u KB", FILM_STORAGE_MOUNT, (unsigned)(used / 1024),
              (unsigned)(total / 1024));
     return err;
@@ -164,14 +169,20 @@ void film_storage_warm_up(void)
     remove(WARM_UP_PATH);
     ESP_LOGI(TAG, "allocator warm-up %s in %lld ms", ok ? "done" : "failed",
              (long long)((esp_timer_get_time() - t0) / 1000));
+    film_storage_refresh_free();
     film_perf_mem("storage warm-up: after");
 }
 
 uint64_t film_storage_free_bytes(void)
 {
+    return atomic_load(&s_free_bytes);
+}
+
+void film_storage_refresh_free(void)
+{
     size_t total = 0, used = 0;
     if (!s_nand.mounted || esp_littlefs_blockdev_info(s_nand.blockdev, &total, &used) != ESP_OK) {
-        return 0;
+        return;
     }
-    return total > used ? (uint64_t)(total - used) : 0;
+    atomic_store(&s_free_bytes, total > used ? (uint64_t)(total - used) : 0);
 }
