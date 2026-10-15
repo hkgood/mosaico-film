@@ -28,19 +28,31 @@
 extern "C" {
 #endif
 
-/** M6 取景框在传感器长边上占的比例（640 中的 360）；取景帧与成片共用这个裁切 */
+/** M6 的 4:3 裁切框在传感器长边上占的比例（16 份中的 9 份，即 2048 中的 1152）；取景帧与成片共用这个裁切 */
 #define FILM_DARKROOM_M6_CROP_NUM 9
 #define FILM_DARKROOM_M6_CROP_DEN 16
 
-/** 成片尺寸（取景方向，横拿时） */
-#define FILM_DARKROOM_M6_W        1440
-#define FILM_DARKROOM_M6_H        1080
-/** 宝丽来相纸与其中的方形图像 */
-#define FILM_DARKROOM_PRINT_W     1140
-#define FILM_DARKROOM_PRINT_H     1387
-#define FILM_DARKROOM_PRINT_IMAGE 1024
-#define FILM_DARKROOM_PRINT_SIDE  58
-#define FILM_DARKROOM_PRINT_TOP   78
+/*
+ * 成片尺寸：原片像素 1:1 输出，不缩放（传感器 2048×1536）。取景方向（握持方向转正之前）：
+ *   M6 全画幅：1536 × 2048（宽 × 高，竖幅；握持转 90°/270° 后是 2048 × 1536）
+ *   M6 4:3 裁切：1536 × 1152（横幅）
+ *   SX-70 方形图像：1536 × 1536
+ */
+#define FILM_DARKROOM_M6_W        1536
+#define FILM_DARKROOM_M6_H        1152
+#define FILM_DARKROOM_M6_FULL_H   2048
+/*
+ * 宝丽来相纸与其中的方形图像：图像 1536 见方（原片 1:1），相纸比例沿用旧版（1024 图像、1140×1387）。
+ * 图像位置取偶数（YUV420 存放按 2×2 块做色度），相纸宽高取 16 的倍数（硬件 JPEG 编码按 16×16 的 MCU 读取）。
+ * 屏幕尺寸的相纸（SCREEN）仍按旧版的比例，界面里的版式不变。
+ */
+#define FILM_DARKROOM_PRINT_W     1712
+#define FILM_DARKROOM_PRINT_H     2096
+#define FILM_DARKROOM_PRINT_IMAGE 1536
+#define FILM_DARKROOM_PRINT_SIDE  88
+#define FILM_DARKROOM_PRINT_TOP   118
+/** 任一成片的最长边上限；滤镜实例（film_filter）按这个尺寸创建 */
+#define FILM_DARKROOM_MAX_EDGE    2112
 
 /** 屏幕尺寸成片（大图浏览、显影动画）与缩略图的上限 */
 #define FILM_DARKROOM_SCREEN_MAX_W 480
@@ -80,6 +92,11 @@ typedef struct {
     uint32_t seed;
     bool light_leak;
     bool instant;               /*!< 宝丽来：方形构图 + 相纸 */
+    /*
+     * M6 的取景范围：false 为传感器全画幅（默认），true 为中间 4:3 裁切。宝丽来恒为方形，忽略此项。
+     * 全画幅在取景方向是 3:4 竖幅，屏幕图与取景画面相应为 360×480。
+     */
+    bool crop_43;
     gfx_rot_t rot;              /*!< 拍摄时的握持方向（与界面的 rot 一致） */
     const char *stamp;          /*!< 日期戳文字，NULL 或空串不压 */
     film_darkroom_size_t size;
@@ -106,17 +123,37 @@ typedef struct {
     esp_err_t (*read)(void *ctx, const uint8_t **ret_rows, size_t *ret_stride, int *ret_count);
 } film_darkroom_source_t;
 
-/** 成片（RGB888，R、G、B 字节顺序） */
+/** 成片缓冲的像素格式 */
+typedef enum {
+    FILM_IMAGE_RGB888 = 0,      /*!< R、G、B 字节顺序，每行 stride 字节 */
+    FILM_IMAGE_YUV420,          /*!< 见 film_yuv.h：12 bit/像素，可直接交给硬件 JPEG 编码器 */
+} film_image_format_t;
+
+/** 成片（格式见 format） */
 typedef struct {
     uint8_t *pixels;
     uint16_t width;
     uint16_t height;
-    size_t stride;
+    size_t stride;              /*!< RGB888 每行字节数；YUV420 为 0 */
     size_t size;                /*!< 缓冲总字节数 */
+    film_image_format_t format;
 } film_darkroom_image_t;
 
+/**
+ * 把成片的一个矩形读成 RGB888（任意格式，供测试、缩略图等使用）。
+ * 返回 0 成功，-1 越界。
+ */
+int film_darkroom_image_get_rgb(const film_darkroom_image_t *image, int x, int y, int w, int h, uint8_t *rgb,
+                                size_t rgb_stride);
+
 typedef struct {
-    film_filter_handle_t filter;        /*!< 调用者拥有，尺寸至少 1440×1440 */
+    film_filter_handle_t filter;        /*!< 调用者拥有，尺寸至少 FILM_DARKROOM_MAX_EDGE 见方 */
+    /*
+     * 存盘成片（FILM_DARKROOM_FULL）的缓冲格式。设备上放不下 9 MB 以上的 RGB888，用 YUV420
+     * （分条带滤镜，结果与整幅冲洗一致，只多一次 4:2:0 色度取样）；PC、主机测试内存充裕，用 RGB888。
+     * 屏幕图与取景画面恒为 RGB888。
+     */
+    film_image_format_t full_format;
     void *(*alloc)(size_t bytes, void *ctx);
     void (*free)(void *ptr, void *ctx);
     void *alloc_ctx;

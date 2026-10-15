@@ -17,6 +17,7 @@
 #include "esp_video_device.h"
 #include "esp_video_ioctl.h"
 #include "film_balance.h"
+#include "film_perf.h"
 #include "freertos/FreeRTOS.h"
 #include "linux/videodev2.h"
 
@@ -258,6 +259,7 @@ static esp_err_t still_open(still_t *s)
     s->awb = s_awb;
     taskEXIT_CRITICAL(&s_awb_lock);
     ESP_RETURN_ON_ERROR(awb_lock(s->fd, &s->awb), TAG, "lock awb");
+    film_perf_mark(FILM_PERF_FORMAT_SWITCHED);
 
     struct v4l2_format format = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE };
     ESP_RETURN_ON_ERROR(v4l2(s->fd, VIDIOC_G_FMT, &format, "G_FMT"), TAG, "get format");
@@ -287,6 +289,7 @@ static esp_err_t still_open(still_t *s)
     int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     ESP_RETURN_ON_ERROR(v4l2(s->fd, VIDIOC_STREAMON, &type, "STREAMON"), TAG, "stream on");
     s->streaming = true;
+    film_perf_mark(FILM_PERF_STILL_STREAMING);
     return ESP_OK;
 }
 
@@ -394,6 +397,9 @@ esp_err_t film_still_capture(film_still_t *ret)
     esp_err_t err = still_open(&s);
     if (err == ESP_OK) {
         err = grab(&s, copy, &ret->size);
+        if (err == ESP_OK) {
+            film_perf_mark(FILM_PERF_FRAME_READY);
+        }
     }
     const esp_err_t close_err = still_close(&s);
     if (err == ESP_OK && close_err != ESP_OK) {

@@ -44,15 +44,25 @@ struct film_shell_t {
     uint32_t stats_frames;
     uint64_t stats_total_us;
     uint32_t stats_max_us;
+    uint64_t stats_commit_us;   /*!< invalidate 调用累计耗时 */
+    uint32_t stats_draw_calls;  /*!< shell_draw 回调次数（GSP 把画面取走送显的次数） */
+    uint64_t stats_draw_us;
 };
+
+static bool stats_enabled(const struct film_shell_t *s);
 
 static void shell_draw(const esp_gsp_canvas_surface_t *surface, void *ctx)
 {
     struct film_shell_t *s = ctx;
+    const int64_t t0 = stats_enabled(s) ? s->config.now_us() : 0;
     for (uint16_t y = 0; y < surface->height; ++y) {
         const uint16_t *src = s->frame + (size_t)(surface->y + y) * FILM_APP_SCREEN_W + surface->x;
         memcpy((uint8_t *)surface->pixels + (size_t)y * surface->stride_bytes, src,
                (size_t)surface->width * sizeof(uint16_t));
+    }
+    if (stats_enabled(s)) {
+        ++s->stats_draw_calls;
+        s->stats_draw_us += (uint64_t)(s->config.now_us() - t0);
     }
 }
 
@@ -109,6 +119,9 @@ static void stats_tick(struct film_shell_t *s, uint32_t now)
             .frames = s->stats_frames,
             .avg_us = (uint32_t)(s->stats_total_us / s->stats_frames),
             .max_us = s->stats_max_us,
+            .commit_avg_us = (uint32_t)(s->stats_commit_us / s->stats_frames),
+            .draw_calls = s->stats_draw_calls,
+            .draw_avg_us = s->stats_draw_calls ? (uint32_t)(s->stats_draw_us / s->stats_draw_calls) : 0,
         };
         s->config.report(&stats);
     }
@@ -116,6 +129,9 @@ static void stats_tick(struct film_shell_t *s, uint32_t now)
     s->stats_frames = 0;
     s->stats_total_us = 0;
     s->stats_max_us = 0;
+    s->stats_commit_us = 0;
+    s->stats_draw_calls = 0;
+    s->stats_draw_us = 0;
 }
 
 /*
@@ -137,7 +153,11 @@ static void shell_render(esp_gsp_handle_t ui, struct film_shell_t *s, bool full)
     if (stats_enabled(s)) {
         stats_add(s, s->config.now_us() - t0);
     }
+    const int64_t commit_t0 = stats_enabled(s) ? s->config.now_us() : 0;
     invalidate_rect(ui, s, rect);
+    if (stats_enabled(s)) {
+        s->stats_commit_us += (uint64_t)(s->config.now_us() - commit_t0);
+    }
 }
 
 static esp_gsp_err_t create_app(struct film_shell_t *s, const film_port_t *port)

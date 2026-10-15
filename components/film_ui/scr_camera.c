@@ -150,6 +150,30 @@ void cam_load_new_roll(film_app_t *app, bool change_film)
     }
 }
 
+/** M6 当前取景范围下的取景帧尺寸：4:3 裁切 480×360，全画幅 3:4 竖幅 270×360 */
+static void m6_view_dims(const film_app_t *app, int *ret_w, int *ret_h)
+{
+    *ret_w = app->settings.crop_43 ? FILM_VF_M6_W : FILM_VF_M6_FULL_W;
+    *ret_h = app->settings.crop_43 ? FILM_VF_M6_H : FILM_VF_M6_FULL_H;
+}
+
+/** 这帧取景是否就是当前取景范围的尺寸（切换取景范围的瞬间可能还有旧尺寸的帧） */
+static bool m6_frame_fits(const film_app_t *app, int w, int h)
+{
+    int vw, vh;
+    m6_view_dims(app, &vw, &vh);
+    return w == vw && h == vh;
+}
+
+/** 取景窗口里画面所在的矩形：4:3 裁切占满窗口；全画幅 3:4 竖幅居中，两侧留黑 */
+static gfx_rect_t m6_image_rect(const film_app_t *app, gfx_rect_t window)
+{
+    int vw, vh;
+    m6_view_dims(app, &vw, &vh);
+    const int w = window.h * vw / vh;
+    return w >= window.w ? window : gfx_rect(window.x + (window.w - w) / 2, window.y, w, window.h);
+}
+
 void cam_fire(film_app_t *app)
 {
     cam_state_t *cam = &app->cam;
@@ -159,6 +183,10 @@ void cam_fire(film_app_t *app)
     if (!app->storage_ok || !app->library) {
         app_toast(app, "存储不可用，无法保存照片");
         app_feedback(app, FILM_FEEDBACK_ERROR);
+        return;
+    }
+    if (app->shots_left == 0) {
+        app_toast_error(app, FILM_ERR_STORAGE_FULL);
         return;
     }
     if (!app->camera_ok) {
@@ -172,6 +200,7 @@ void cam_fire(film_app_t *app)
         .film = (film_id_t)app->settings.film,
         .exposure_ev = cam->ev,
         .instant = app->settings.instant != 0,
+        .crop_43 = app->settings.crop_43 != 0,
         .date_stamp = app->settings.date_stamp && has_time,
         .rot = app->rot,
         .seed = app_random(app),
@@ -199,10 +228,10 @@ void cam_fire(film_app_t *app)
         cam->dev_done_at = 0;
         cam->dev_emerge_t0 = app->now + SHOT_FLASH_MS;
         cam_open(app, CAM_OVL_DEVELOPING);
-    } else if (app->frame && app->frame->width == FILM_VF_M6_W && app->frame->height == FILM_VF_M6_H) {
-        memcpy(cam->frozen, app->frame->pixels, sizeof(uint16_t) * FILM_VF_M6_W * FILM_VF_M6_H);
-        cam->frozen_w = FILM_VF_M6_W;
-        cam->frozen_h = FILM_VF_M6_H;
+    } else if (app->frame && m6_frame_fits(app, app->frame->width, app->frame->height)) {
+        memcpy(cam->frozen, app->frame->pixels, sizeof(uint16_t) * app->frame->width * app->frame->height);
+        cam->frozen_w = app->frame->width;
+        cam->frozen_h = app->frame->height;
     } else {
         cam->frozen_w = 0;
     }
@@ -623,7 +652,12 @@ static void draw_m6_controls(film_app_t *app, gfx_canvas_t *c)
     snprintf(n, sizeof(n), "%02u", (unsigned)app->settings.frame);
     ui_glow_text(c, &font_jost_m19, &font_jost_m19_glow, 19, 0.02f, COLOR_AMBER, cam->counter_down ? 200 : 115,
                  GFX_ALIGN_CENTER, rot, M6_COUNTER_X, M6_COUNTER_Y, n);
-    engrave_below(c, M6_COUNTER_X, M6_COUNTER_Y, M6_LABEL_GAP, "ROLL", false, rot);
+    /* 空间快满时标签换成剩余张数，平时仍是 ROLL */
+    char label[12] = "ROLL";
+    if (app->shots_left >= 0 && app->shots_left <= FILM_SHOTS_LEFT_WARN) {
+        snprintf(label, sizeof(label), "%d LEFT", app->shots_left);
+    }
+    engrave_below(c, M6_COUNTER_X, M6_COUNTER_Y, M6_LABEL_GAP, label, false, rot);
 
     /* 滚花快门 */
     if (cam->shutter_down) {
@@ -650,13 +684,11 @@ static void draw_m6_controls(film_app_t *app, gfx_canvas_t *c)
 }
 
 /**
- * 把转正后的屏幕成片转回取景方向，写成 480×360（与取景帧逐像素对齐，便于淡入对比）。
- * 映射规则与 ui_point 相同；竖拿时成片只有 270×360，最近邻放大回取景尺寸。
+ * 把转正后的屏幕成片转回取景方向，写成 vw×vh（与取景帧逐像素对齐，便于淡入对比）。
+ * 映射规则与 ui_point 相同；成片与取景尺寸不同（竖拿、旧照片）时最近邻缩放。
  */
-static void print_to_view(const uint16_t *src, int w, int h, gfx_rot_t rot, uint16_t *dst)
+static void print_to_view(const uint16_t *src, int w, int h, gfx_rot_t rot, int vw, int vh, uint16_t *dst)
 {
-    const int vw = FILM_VF_M6_W;
-    const int vh = FILM_VF_M6_H;
     const bool swap = rot == GFX_ROT_90 || rot == GFX_ROT_270;
     const int uw = swap ? vh : vw;      /* 转正后（用户方向）的虚拟画幅 */
     const int uh = swap ? vw : vh;
@@ -746,40 +778,46 @@ static void draw_m6_shot(film_app_t *app, gfx_canvas_t *c)
     }
     const float t = cam_progress(app->now, cam->shot_t0, SHOT_FLY_MS);
     const float e = t * t;
-    const float w = 480.0f + (34.0f - 480.0f) * e;
-    const float h = 360.0f + (26.0f - 360.0f) * e;
+    /* 从取景画面（全画幅时窗口里居中的 3:4）缩成计数窗里的小图 */
+    const float w0 = (float)(cam->dev_ready ? cam->dev_w : cam->frozen_w);
+    const float h0 = (float)(cam->dev_ready ? cam->dev_h : cam->frozen_h);
+    const float w = w0 + (34.0f * w0 / h0 - w0) * e;
+    const float h = h0 + (26.0f - h0) * e;
     const float cx = 240.0f + ((float)M6_COUNTER_X - 240.0f) * e;
     const float cy = 180.0f + ((float)M6_COUNTER_Y - 180.0f) * e;
     const gfx_rect_t dst = gfx_rect((int)(cx - w / 2), (int)(cy - h / 2), (int)w, (int)h);
     const uint8_t opacity = (uint8_t)(255.0f * (1.0f - t * t * t * t));
     gfx_shadow(c, gfx_rect(dst.x, dst.y + 4, dst.w, dst.h), 0, 10, COLOR_BLACK, (uint8_t)(opacity / 3));
     gfx_fill(c, gfx_rect(dst.x - 3, dst.y - 3, dst.w + 6, dst.h + 6), COLOR_PAPER, opacity);
-    gfx_blit_scaled(c, photo, FILM_VF_M6_W, FILM_VF_M6_H, FILM_VF_M6_W, gfx_rect(0, 0, FILM_VF_M6_W, FILM_VF_M6_H), dst,
-                    opacity);
+    gfx_blit_scaled(c, photo, (int)w0, (int)h0, (int)w0, gfx_rect(0, 0, (int)w0, (int)h0), dst, opacity);
 }
 
 static void render_m6(film_app_t *app, gfx_canvas_t *c)
 {
     const cam_state_t *cam = &app->cam;
     const gfx_rect_t vf = gfx_rect(0, 0, SCREEN_W, M6_PLATE_Y);
+    const gfx_rect_t img = m6_image_rect(app, vf);      /* 全画幅时窗口两侧留黑 */
+    if (img.w < vf.w) {
+        gfx_fill(c, vf, COLOR_BLACK, 255);
+    }
     if (cam->shot == SHOT_FLASH) {
         gfx_fill(c, vf, COLOR_BLACK, 255);
     } else if ((cam->shot == SHOT_HOLD || cam->shot == SHOT_REVEAL) && cam->frozen_w) {
         const int h = cam->frozen_h > M6_PLATE_Y ? M6_PLATE_Y : cam->frozen_h;
-        gfx_copy(c, cam->frozen, cam->frozen_w, h, cam->frozen_w, 0, 0);
+        gfx_copy(c, cam->frozen, cam->frozen_w, h, cam->frozen_w, img.x, img.y);
         if (cam->shot == SHOT_REVEAL && cam->dev_ready) {
             const float t = cam_ease_in_out(cam_progress(app->now, cam->shot_t0, SHOT_REVEAL_MS));
-            gfx_blit_scaled(c, cam->dev_print, FILM_VF_M6_W, FILM_VF_M6_H, FILM_VF_M6_W,
-                            gfx_rect(0, 0, FILM_VF_M6_W, h), gfx_rect(0, 0, FILM_VF_M6_W, h), (uint8_t)(255.0f * t));
+            gfx_blit_scaled(c, cam->dev_print, cam->dev_w, cam->dev_h, cam->dev_w,
+                            gfx_rect(0, 0, cam->dev_w, h), gfx_rect(img.x, img.y, img.w, h), (uint8_t)(255.0f * t));
         }
     } else {
-        cam_draw_live(app, c, vf);
+        cam_draw_live(app, c, img);
     }
     if (cam->shot != SHOT_FLASH) {
-        cam_draw_vf_overlay(app, c, vf, true);
+        cam_draw_vf_overlay(app, c, img, true);
     }
     if (cam->shot == SHOT_HOLD || cam->shot == SHOT_REVEAL) {
-        draw_developing(app, c, vf);
+        draw_developing(app, c, img);
     }
     if (cam->overlay == CAM_OVL_POPOVER) {
         gfx_dim(c, vf, 184);
@@ -1056,9 +1094,11 @@ static void m6_event(film_app_t *app, const film_event_t *ev)
         return;
     }
     if (ev->type == FILM_EVT_DEVELOPED && !ev->preview && ev->screen && ev->width && ev->height) {
-        print_to_view(ev->screen, ev->width, ev->height, cam->shot_rot, cam->dev_print);
-        cam->dev_w = FILM_VF_M6_W;
-        cam->dev_h = FILM_VF_M6_H;
+        int vw, vh;
+        m6_view_dims(app, &vw, &vh);
+        print_to_view(ev->screen, ev->width, ev->height, cam->shot_rot, vw, vh, cam->dev_print);
+        cam->dev_w = (uint16_t)vw;
+        cam->dev_h = (uint16_t)vh;
         cam->dev_ready = true;
     } else if (ev->type == FILM_EVT_PROGRESS) {
         if (ev->progress > cam->dev_progress) {

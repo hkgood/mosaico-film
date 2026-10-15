@@ -11,6 +11,7 @@
 #include "film_camera.h"
 #include "film_display.h"
 #include "film_lab.h"
+#include "film_perf.h"
 #include "film_power.h"
 #include "film_share.h"
 #include "film_storage.h"
@@ -135,6 +136,8 @@ static esp_err_t dev_shoot(void *ctx, const film_shot_t *shot)
         return FILM_ERR_NO_CAMERA;
     }
     ESP_RETURN_ON_ERROR(film_lab_reserve(p->lab), TAG, "lab not ready");
+    film_perf_mark(FILM_PERF_SHUTTER);
+    film_perf_mem("viewfinder at shutter");
     const esp_err_t err = film_camera_capture(p->camera, shot);
     if (err != ESP_OK) {
         film_lab_cancel_reserve(p->lab);
@@ -165,6 +168,12 @@ static bool dev_poll_event(void *ctx, film_event_t *ret_event)
 static const char *dev_storage_root(void *ctx)
 {
     return ((film_port_dev_handle_t)ctx)->root;
+}
+
+static uint64_t dev_storage_free(void *ctx)
+{
+    (void)ctx;
+    return film_storage_free_bytes();
 }
 
 static bool dev_settings_load(void *ctx, void *data, size_t len)
@@ -379,6 +388,7 @@ esp_err_t film_port_dev_create(const film_port_dev_config_t *config, film_port_d
         .release_result = dev_release_result,
         .poll_event = dev_poll_event,
         .storage_root = dev_storage_root,
+        .storage_free = dev_storage_free,
         .settings_load = dev_settings_load,
         .settings_save = dev_settings_save,
         .share_start = dev_share_start,

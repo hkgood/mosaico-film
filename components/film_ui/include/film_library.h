@@ -30,6 +30,7 @@ extern "C" {
 #define FILM_PHOTO_INSTANT    0x01  /*!< 宝丽来相纸（成片含相纸边） */
 #define FILM_PHOTO_DATE       0x02  /*!< 已压日期戳 */
 #define FILM_PHOTO_REDEVELOP  0x04  /*!< 由重新冲洗得到 */
+#define FILM_PHOTO_FULLFRAME  0x80  /*!< M6 全画幅（无此位的旧照片是 4:3 裁切；宝丽来恒为方形，不设此位） */
 /** bit 6..5：原片校正的亮度细分（film_balance_t 的 bit 17..16），旧照片为 0 */
 #define FILM_PHOTO_BALANCE_FINE_SHIFT 5
 #define FILM_PHOTO_BALANCE_FINE_MASK  0x60

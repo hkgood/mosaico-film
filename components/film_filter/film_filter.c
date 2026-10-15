@@ -100,10 +100,13 @@ esp_err_t film_filter_create(const film_filter_config_t *config, film_filter_han
     handle->halation_wx = calloc(config->max_width, sizeof(uint8_t));
     handle->pixel_cells = calloc(FILM_PIXEL_COLUMNS * FILM_PIXEL_COLUMNS * FILM_CHANNELS, 1);
     handle->pixel_col_cell = calloc(config->max_width, sizeof(uint8_t));
+    handle->pixel_sums = calloc((size_t)FILM_PIXEL_COLUMNS * FILM_PIXEL_COLUMNS * FILM_CHANNELS, sizeof(uint32_t));
+    handle->pixel_row_cell = calloc(config->max_height, sizeof(uint8_t));
 
     if (!handle->grain_noise || !handle->vignette_col || !handle->vignette_row || !handle->leak_col ||
             !handle->leak_row || !handle->halation_mask || !handle->halation_next || !handle->halation_line || !handle->halation_x0 ||
-            !handle->halation_wx || !handle->pixel_cells || !handle->pixel_col_cell) {
+            !handle->halation_wx || !handle->pixel_cells || !handle->pixel_col_cell || !handle->pixel_sums ||
+            !handle->pixel_row_cell) {
         film_filter_delete(handle);
         return ESP_ERR_NO_MEM;
     }
@@ -138,6 +141,8 @@ esp_err_t film_filter_delete(film_filter_handle_t handle)
     free(handle->halation_wx);
     free(handle->pixel_cells);
     free(handle->pixel_col_cell);
+    free(handle->pixel_sums);
+    free(handle->pixel_row_cell);
     free(handle);
     return ESP_OK;
 }
@@ -247,8 +252,8 @@ static void build_leak_axes(film_filter_handle_t handle, uint32_t seed, uint16_t
 static void prepare_tables(film_filter_handle_t handle, const film_preset_t *preset, film_id_t film,
                            int16_t ev_centi, const film_develop_ctx_t *ctx)
 {
-    uint16_t width = ctx->image->width;
-    uint16_t height = ctx->image->height;
+    uint16_t width = ctx->width;
+    uint16_t height = ctx->height;
     bool resized = width != handle->cached_width || height != handle->cached_height;
 
     if (resized || handle->cached_film != (int16_t)film) {
@@ -296,20 +301,22 @@ static void rows_job_run(void *arg)
 }
 
 /*
- * 处理 [0, count) 行：有工作任务时调用者做上半段、工作任务做下半段，返回前两段都已完成。
- * 分界点向下对齐到 align 行（红晕第一遍要求两段落在不同的网格行上）。
+ * 处理 [first, first + count) 行（整幅图像的绝对行号）：有工作任务时调用者做上半段、工作任务做下半段，
+ * 返回前两段都已完成。分界点向下对齐到 align 的倍数（红晕第一遍要求两段落在不同的网格行上，
+ * 网格行按绝对行号划分，所以对齐也按绝对行号）。
  */
-static void run_rows(const film_develop_ctx_t *ctx, film_rows_fn_t fn, uint16_t count, uint16_t align)
+static void run_rows(const film_develop_ctx_t *ctx, film_rows_fn_t fn, uint16_t first, uint16_t count,
+                     uint16_t align)
 {
     film_worker_t *worker = ctx->filter->worker;
-    uint16_t split = (uint16_t)(count / 2 / align * align);
-    if (worker == NULL || count < FILM_PARALLEL_MIN_ROWS || split == 0) {
-        fn(ctx, 0, count);
+    const uint16_t split = (uint16_t)((first + count / 2) / align * align);
+    if (worker == NULL || count < FILM_PARALLEL_MIN_ROWS || split <= first || split >= first + count) {
+        fn(ctx, first, (uint16_t)(first + count));
         return;
     }
-    rows_job_t job = { .fn = fn, .ctx = ctx, .begin = split, .end = count };
+    rows_job_t job = { .fn = fn, .ctx = ctx, .begin = split, .end = (uint16_t)(first + count) };
     film_worker_start(worker, rows_job_run, &job);
-    fn(ctx, 0, split);
+    fn(ctx, first, split);
     film_worker_wait(worker);
 }
 
@@ -330,6 +337,59 @@ static esp_err_t validate_request(film_filter_handle_t handle, const film_develo
     return ESP_OK;
 }
 
+/*
+ * 建好一次冲洗的上下文和查找表（整图冲洗与分条带冲洗共用）。
+ * width / height 是整幅图像的尺寸，image 是当前处理的像素（整图，或从 row0 行开始的一个条带）。
+ */
+static void build_context(film_filter_handle_t handle, const film_develop_params_t *params,
+                          const film_image_t *image, uint16_t width, uint16_t height, uint16_t row0,
+                          film_develop_ctx_t *ctx)
+{
+    const film_preset_t *preset = film_preset_get(params->film);
+    float ev = params->exposure_ev;
+    ev = ev < FILM_EXPOSURE_EV_MIN ? FILM_EXPOSURE_EV_MIN : (ev > FILM_EXPOSURE_EV_MAX ? FILM_EXPOSURE_EV_MAX : ev);
+    const int16_t ev_centi = (int16_t)lroundf(ev * 100.0f);
+    *ctx = (film_develop_ctx_t) {
+        .filter = handle,
+        .image = image,
+        .width = width,
+        .height = height,
+        .row0 = row0,
+        .seed = params->seed,
+        .bgr = image->order == FILM_ORDER_BGR,
+        .exposure = ev_centi != 0,
+        .grain_inv_q16 = 65536u,
+    };
+    const uint32_t long_edge = width > height ? width : height;
+    if (long_edge > FILM_GRAIN_REF_EDGE) {
+        ctx->grain_inv_q16 = (uint32_t)(((uint64_t)FILM_GRAIN_REF_EDGE << 16) / long_edge);
+    }
+
+    if (preset->pixel) {
+        /* 像素风不走曲线表；曝光表很小，每次按需重建，不占用彩色管线的缓存键 */
+        if (ctx->exposure) {
+            build_exposure_lut(handle->exposure_lut, ev_centi);
+        }
+        handle->cached_ev_centi = EV_CENTI_INVALID;
+        handle->halation_valid = false;
+        film_pixel_prepare(ctx);
+        return;
+    }
+
+    ctx->sat_q8 = (int32_t)lroundf(preset->saturation * Q8_ONE);
+    ctx->mono = preset->mono;
+    ctx->halation = preset->halation > 0.0f;
+    ctx->leak = params->light_leak;
+    ctx->grain = params->grain && preset->grain > 0.0f;
+    ctx->grid = film_halation_grid_for(width, height);
+    prepare_tables(handle, preset, params->film, ev_centi, ctx);
+    for (int c = 0; c < FILM_CHANNELS; c++) {
+        /* 遮罩满值 255 × MASK_SCALE 对应加 color × halation 个色阶（Q8 下再乘 256） */
+        const float full = 255.0f * FILM_HALATION_MASK_SCALE;
+        ctx->halation_k_q16[c] = (int32_t)lroundf(s_halation_color[c] * preset->halation / full * 65536.0f);
+    }
+}
+
 esp_err_t film_filter_develop(film_filter_handle_t handle, const film_develop_params_t *params,
                               const film_image_t *image)
 {
@@ -338,55 +398,27 @@ esp_err_t film_filter_develop(film_filter_handle_t handle, const film_develop_pa
         return err;
     }
     const film_preset_t *preset = film_preset_get(params->film);
-    float ev = params->exposure_ev;
-    ev = ev < FILM_EXPOSURE_EV_MIN ? FILM_EXPOSURE_EV_MIN : (ev > FILM_EXPOSURE_EV_MAX ? FILM_EXPOSURE_EV_MAX : ev);
-    int16_t ev_centi = (int16_t)lroundf(ev * 100.0f);
-    film_develop_ctx_t ctx = {
-        .filter = handle,
-        .image = image,
-        .seed = params->seed,
-        .bgr = image->order == FILM_ORDER_BGR,
-        .exposure = ev_centi != 0,
-    };
+    film_develop_ctx_t ctx;
+    build_context(handle, params, image, image->width, image->height, 0, &ctx);
 
     if (preset->pixel) {
-        /* 像素风不走曲线表；曝光表很小，每次按需重建，不占用彩色管线的缓存键 */
-        if (ctx.exposure) {
-            build_exposure_lut(handle->exposure_lut, ev_centi);
-        }
-        handle->cached_ev_centi = EV_CENTI_INVALID;
-        handle->halation_valid = false;
-        film_pixel_prepare(&ctx);
-        run_rows(&ctx, film_pixel_cell_rows, ctx.pixel_rows, 1);
-        run_rows(&ctx, film_pixel_upsample_rows, image->height, 1);
+        run_rows(&ctx, film_pixel_cell_rows, 0, ctx.pixel_rows, 1);
+        run_rows(&ctx, film_pixel_upsample_rows, 0, image->height, 1);
         return ESP_OK;
     }
-
-    ctx.sat_q8 = (int32_t)lroundf(preset->saturation * Q8_ONE);
-    ctx.mono = preset->mono;
-    ctx.halation = preset->halation > 0.0f;
-    ctx.leak = params->light_leak;
-    ctx.grain = params->grain && preset->grain > 0.0f;
-    ctx.grid = film_halation_grid_for(image->width, image->height);
-    prepare_tables(handle, preset, params->film, ev_centi, &ctx);
 
     if (!ctx.halation) {
-        run_rows(&ctx, film_color_fused_rows, image->height, 1);
+        run_rows(&ctx, film_color_fused_rows, 0, image->height, 1);
         return ESP_OK;
     }
 
-    for (int c = 0; c < FILM_CHANNELS; c++) {
-        /* 遮罩满值 255 × MASK_SCALE 对应加 color × halation 个色阶（Q8 下再乘 256） */
-        float full = 255.0f * FILM_HALATION_MASK_SCALE;
-        ctx.halation_k_q16[c] = (int32_t)lroundf(s_halation_color[c] * preset->halation / full * 65536.0f);
-    }
     size_t mask_bytes = (size_t)ctx.grid.width * ctx.grid.height * sizeof(uint32_t);
 
     if (params->reuse_halation && handle->halation_valid) {
         /* 一遍：读 halation_mask（上一帧已模糊），同时把本帧遮罩累加进 halation_next */
         ctx.halation_accum = handle->halation_next;
         memset(ctx.halation_accum, 0, mask_bytes);
-        run_rows(&ctx, film_color_reuse_rows, image->height, ctx.grid.factor);
+        run_rows(&ctx, film_color_reuse_rows, 0, image->height, ctx.grid.factor);
         uint32_t *done = handle->halation_next;
         handle->halation_next = handle->halation_mask;
         handle->halation_mask = done;
@@ -396,10 +428,133 @@ esp_err_t film_filter_develop(film_filter_handle_t handle, const film_develop_pa
 
     ctx.halation_accum = handle->halation_mask;
     memset(ctx.halation_accum, 0, mask_bytes);
-    run_rows(&ctx, film_color_tone_rows, image->height, ctx.grid.factor);
+    run_rows(&ctx, film_color_tone_rows, 0, image->height, ctx.grid.factor);
     film_halation_resolve(handle, &ctx.grid, image->width, image->height);
-    run_rows(&ctx, film_color_finish_rows, image->height, 1);
+    run_rows(&ctx, film_color_finish_rows, 0, image->height, 1);
     /* 遮罩保留到下一次冲洗，供取景的快速红晕使用 */
     handle->halation_valid = true;
     return ESP_OK;
+}
+
+/* ---------- 分条带冲洗 ---------- */
+
+/** 条带必须属于已开始的会话：宽度、通道顺序一致，行范围落在整幅图像之内 */
+static esp_err_t validate_strip(film_filter_handle_t handle, const film_image_t *strip, uint16_t y0)
+{
+    if (handle == NULL || strip == NULL || strip->pixels == NULL || !handle->strip.active) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (strip->height == 0 || strip->width != handle->strip.width || strip->order != handle->strip.order ||
+            strip->stride < (size_t)strip->width * FILM_CHANNELS ||
+            (uint32_t)y0 + strip->height > handle->strip.height) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return ESP_OK;
+}
+
+esp_err_t film_filter_strip_begin(film_filter_handle_t handle, const film_develop_params_t *params, uint16_t width,
+                                  uint16_t height, film_channel_order_t order)
+{
+    if (handle == NULL || params == NULL || width == 0 || height == 0 || film_preset_get(params->film) == NULL ||
+            (order != FILM_ORDER_RGB && order != FILM_ORDER_BGR)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (width > handle->max_width || height > handle->max_height) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    handle->strip.active = true;
+    handle->strip.params = *params;
+    handle->strip.params.reuse_halation = false;   /* 成片必须走完整的两遍算法 */
+    handle->strip.width = width;
+    handle->strip.height = height;
+    handle->strip.order = order;
+
+    /* 用一个占位条带建好整幅图像的表，并把累加器清零；像素内容不会被读取 */
+    uint8_t placeholder[FILM_CHANNELS] = { 0 };
+    const film_image_t probe = { .pixels = placeholder, .width = width, .height = 1,
+                                 .stride = (size_t)width * FILM_CHANNELS, .order = order };
+    film_develop_ctx_t ctx;
+    build_context(handle, &handle->strip.params, &probe, width, height, 0, &ctx);
+    if (film_preset_get(params->film)->pixel) {
+        film_pixel_strip_reset(&ctx);
+    } else if (ctx.halation) {
+        memset(handle->halation_mask, 0, (size_t)ctx.grid.width * ctx.grid.height * sizeof(uint32_t));
+        handle->halation_valid = false;
+    }
+    return ESP_OK;
+}
+
+film_strip_pre_pass_t film_filter_strip_pre_pass(film_filter_handle_t handle)
+{
+    if (handle == NULL || !handle->strip.active) {
+        return FILM_STRIP_PRE_PASS_NONE;
+    }
+    const film_preset_t *preset = film_preset_get(handle->strip.params.film);
+    if (preset->pixel) {
+        return FILM_STRIP_PRE_PASS_READ_ONLY;
+    }
+    return preset->halation > 0.0f ? FILM_STRIP_PRE_PASS_IN_PLACE : FILM_STRIP_PRE_PASS_NONE;
+}
+
+esp_err_t film_filter_strip_pre(film_filter_handle_t handle, const film_image_t *strip, uint16_t y0)
+{
+    esp_err_t err = validate_strip(handle, strip, y0);
+    if (err != ESP_OK) {
+        return err;
+    }
+    const film_preset_t *preset = film_preset_get(handle->strip.params.film);
+    film_develop_ctx_t ctx;
+    build_context(handle, &handle->strip.params, strip, handle->strip.width, handle->strip.height, y0, &ctx);
+    if (preset->pixel) {
+        film_pixel_accumulate_rows(&ctx, y0, (uint16_t)(y0 + strip->height));
+    } else if (ctx.halation) {
+        ctx.halation_accum = handle->halation_mask;
+        run_rows(&ctx, film_color_tone_rows, y0, strip->height, ctx.grid.factor);
+    }
+    return ESP_OK;
+}
+
+esp_err_t film_filter_strip_resolve(film_filter_handle_t handle)
+{
+    if (handle == NULL || !handle->strip.active) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const film_preset_t *preset = film_preset_get(handle->strip.params.film);
+    const film_image_t probe = { .pixels = (uint8_t *)handle->pixel_cells, .width = handle->strip.width, .height = 1,
+                                 .stride = (size_t)handle->strip.width * FILM_CHANNELS,
+                                 .order = handle->strip.order };
+    film_develop_ctx_t ctx;
+    build_context(handle, &handle->strip.params, &probe, handle->strip.width, handle->strip.height, 0, &ctx);
+    if (preset->pixel) {
+        film_pixel_strip_resolve(&ctx);
+    } else if (ctx.halation) {
+        film_halation_resolve(handle, &ctx.grid, handle->strip.width, handle->strip.height);
+    }
+    return ESP_OK;
+}
+
+esp_err_t film_filter_strip_finish(film_filter_handle_t handle, const film_image_t *strip, uint16_t y0)
+{
+    esp_err_t err = validate_strip(handle, strip, y0);
+    if (err != ESP_OK) {
+        return err;
+    }
+    const film_preset_t *preset = film_preset_get(handle->strip.params.film);
+    film_develop_ctx_t ctx;
+    build_context(handle, &handle->strip.params, strip, handle->strip.width, handle->strip.height, y0, &ctx);
+    if (preset->pixel) {
+        run_rows(&ctx, film_pixel_upsample_rows, y0, strip->height, 1);
+    } else if (ctx.halation) {
+        run_rows(&ctx, film_color_finish_rows, y0, strip->height, 1);
+    } else {
+        run_rows(&ctx, film_color_fused_rows, y0, strip->height, 1);
+    }
+    return ESP_OK;
+}
+
+void film_filter_strip_end(film_filter_handle_t handle)
+{
+    if (handle) {
+        handle->strip.active = false;
+    }
 }

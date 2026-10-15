@@ -86,7 +86,8 @@ static inline uint32_t halation_contribution(const int32_t t[FILM_CHANNELS])
 typedef struct {
     uint32_t vignette_row;          /*!< 已加上取整偏置 */
     uint32_t leak_row;
-    const int16_t *noise;           /*!< 本行的颗粒噪声，按列直接索引 */
+    const int16_t *noise;           /*!< 本行的颗粒噪声，列下标按 grain_inv_q16 折算 */
+    uint32_t grain_inv_q16;         /*!< 颗粒坐标缩放（见 film_develop_ctx_t） */
     const uint32_t *glow_row0;      /*!< 红晕：上下两行网格和纵向权重 */
     const uint32_t *glow_row1;
     uint32_t glow_wy;
@@ -100,8 +101,10 @@ static finish_row_t finish_row_for(const film_develop_ctx_t *ctx, uint16_t y, bo
         .leak_row = f->leak_row[y],
     };
     /* 每行从噪声表的随机位置开始连续取值，行与行之间互不相关 */
-    uint32_t offset = film_hash32(y * 0x85EBCA77u ^ ctx->seed * 0xC2B2AE3Du) >> (32 - FILM_GRAIN_TABLE_BITS);
+    const uint32_t grain_y = (y * ctx->grain_inv_q16) >> 16;
+    uint32_t offset = film_hash32(grain_y * 0x85EBCA77u ^ ctx->seed * 0xC2B2AE3Du) >> (32 - FILM_GRAIN_TABLE_BITS);
     row.noise = f->grain_noise + offset;
+    row.grain_inv_q16 = ctx->grain_inv_q16;
     if (halation) {
         uint16_t gy0;
         uint8_t wy;
@@ -169,7 +172,7 @@ FILM_INLINE void finish_pixel(const film_develop_ctx_t *ctx, const finish_row_t 
         uint32_t y_idx = channels == 1
                          ? (uint32_t)v[0] >> 8
                          : luma_q16((uint32_t)v[0], (uint32_t)v[1], (uint32_t)v[2]) >> 24;
-        int32_t add_q8 = (row->noise[x] * (int32_t)f->grain_amp_q12[y_idx]) / 16;
+        int32_t add_q8 = (row->noise[(x * row->grain_inv_q16) >> 16] * (int32_t)f->grain_amp_q12[y_idx]) / 16;
         for (int c = 0; c < channels; c++) {
             v[c] += add_q8;
         }
@@ -211,7 +214,7 @@ FILM_INLINE void fused_rows_impl(const film_develop_ctx_t *ctx, uint16_t y0, uin
     const int channels = (mono && !leak) ? 1 : FILM_CHANNELS;
 
     for (uint16_t y = y0; y < y1; y++) {
-        uint8_t *restrict px = image->pixels + (size_t)y * image->stride;
+        uint8_t *restrict px = film_ctx_row(ctx, y);
         const finish_row_t row = finish_row_for(ctx, y, false);
         for (uint16_t x = 0; x < width; x++, px += FILM_CHANNELS) {
             int32_t v[FILM_CHANNELS];
@@ -250,7 +253,7 @@ FILM_INLINE void tone_rows_impl(const film_develop_ctx_t *ctx, uint16_t y0, uint
     const uint16_t factor = ctx->grid.factor;
 
     for (uint16_t y = y0; y < y1; y++) {
-        uint8_t *restrict px = image->pixels + (size_t)y * image->stride;
+        uint8_t *restrict px = film_ctx_row(ctx, y);
         uint32_t *restrict mask_row = ctx->halation_accum + (size_t)(y / factor) * ctx->grid.width;
         uint16_t cell_x = 0;
         uint16_t cell_left = factor;
@@ -289,7 +292,7 @@ FILM_INLINE void finish_rows_impl(const film_develop_ctx_t *ctx, uint16_t y0, ui
     const uint16_t width = image->width;
 
     for (uint16_t y = y0; y < y1; y++) {
-        uint8_t *restrict px = image->pixels + (size_t)y * image->stride;
+        uint8_t *restrict px = film_ctx_row(ctx, y);
         const finish_row_t row = finish_row_for(ctx, y, true);
         for (uint16_t x = 0; x < width; x++, px += FILM_CHANNELS) {
             int32_t v[FILM_CHANNELS] = { px[IDX_R(bgr)] << 8, px[1] << 8, px[IDX_B(bgr)] << 8 };
@@ -321,7 +324,7 @@ FILM_INLINE void reuse_rows_impl(const film_develop_ctx_t *ctx, uint16_t y0, uin
     const uint16_t factor = ctx->grid.factor;
 
     for (uint16_t y = y0; y < y1; y++) {
-        uint8_t *restrict px = image->pixels + (size_t)y * image->stride;
+        uint8_t *restrict px = film_ctx_row(ctx, y);
         uint32_t *restrict mask_row = ctx->halation_accum + (size_t)(y / factor) * ctx->grid.width;
         const finish_row_t row = finish_row_for(ctx, y, true);
         uint16_t cell_x = 0;

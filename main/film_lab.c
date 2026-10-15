@@ -11,6 +11,8 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "film_darkroom.h"
+#include "film_meta.h"
+#include "film_perf.h"
 #include "film_storage.h"
 #include "film_studio.h"
 #include "film_writer.h"
@@ -23,12 +25,12 @@ static const char *TAG = "film_lab";
 #define JOB_QUEUE_LEN           2
 #define SCREEN_SLOTS            2       /*!< 一张界面在显示、一张给下一次冲洗 */
 #define SCREEN_WAIT_MS          5000
-#define FILTER_MAX_SIDE         1440    /*!< film_darkroom 要求滤镜实例至少 1440×1440 */
+#define FILTER_MAX_SIDE         FILM_DARKROOM_MAX_EDGE  /*!< film_darkroom 要求滤镜实例至少这么大 */
 #define JPEG_QUALITY            92
 #define JPEG_QUALITY_FALLBACK   80      /*!< 极少数细节很多的照片超出输出缓冲时，降一档重编 */
 #define JPEG_TIMEOUT_MS         2000
-#define JPEG_OUT_BYTES_NUM      1       /*!< 输出缓冲按每像素 1/2 字节预留，q92 实际约 0.3 */
-#define JPEG_OUT_BYTES_DEN      2
+#define JPEG_OUT_BYTES_NUM      2       /*!< 输出缓冲按每像素 0.4 字节预留（q92 实际约 0.3）；超出时降质量重编 */
+#define JPEG_OUT_BYTES_DEN      5
 #define WARM_UP_IDLE_MS         6000    /*!< 开机后空闲这么久再预热存储（避开开机动画） */
 #define PROOF_STRIP_ROWS        16      /*!< 小样来源每次换算的取景行数 */
 #define PROGRESS_STEP           20      /*!< 进度至少涨 2% 才发一次事件 */
@@ -251,7 +253,8 @@ typedef struct {
     film_lab_handle_t lab;
     job_t *job;
     const char *root;
-    film_blob_t *raw;           /*!< 原片：解码器读、写盘任务写，各持一份引用 */
+    film_blob_t *raw;           /*!< 写盘用的原片（带 EXIF）：这边与写盘任务各持一份引用 */
+    bool source_in_raw;         /*!< 为真：解码器读的就是 raw 的内存（退化为零拷贝时），解码完要放掉 raw 才释放原片 */
     jpeg_source_t *decoder;
     lab_timing_t *timing;
     bool report;                /*!< 是否给界面发进度（只预览时不发） */
@@ -314,6 +317,14 @@ static void log_timing(const lab_timing_t *t, int64_t end)
              span_ms(t->stage[FILM_STAGE_FINISH], next[FILM_STAGE_FINISH]),
              span_ms(t->stage[FILM_STAGE_PREVIEWS], next[FILM_STAGE_PREVIEWS]),
              span_ms(t->stage[FILM_STAGE_ENCODE], next[FILM_STAGE_ENCODE]));
+    FILM_PERF_LOG("lab",
+                  "stages proof=%d wait_writer=%d read=%d decode=%d filter=%d finish=%d previews=%d encode=%d ms",
+                  (int)(t->proof_us / 1000), (int)(t->wait_us / 1000),
+                  span_ms(t->stage[FILM_STAGE_READ], next[FILM_STAGE_READ]), (int)(t->decode_us / 1000),
+                  span_ms(t->stage[FILM_STAGE_FILTER], next[FILM_STAGE_FILTER]),
+                  span_ms(t->stage[FILM_STAGE_FINISH], next[FILM_STAGE_FINISH]),
+                  span_ms(t->stage[FILM_STAGE_PREVIEWS], next[FILM_STAGE_PREVIEWS]),
+                  span_ms(t->stage[FILM_STAGE_ENCODE], next[FILM_STAGE_ENCODE]));
 }
 
 /* ---------------------------------------------------------------- 成片编码（硬件）与延后写盘 */
@@ -324,7 +335,8 @@ static esp_err_t encode(film_lab_handle_t lab, const film_darkroom_image_t *imag
     const jpeg_encode_cfg_t config = {
         .width = image->width,
         .height = image->height,
-        .src_type = JPEG_ENCODE_IN_FORMAT_RGB888,
+        /* 存盘成片是 YUV420 存放（见 film_yuv.h，与硬件格式一致），直接编码，不需要再转换 */
+        .src_type = image->format == FILM_IMAGE_YUV420 ? JPEG_ENCODE_IN_FORMAT_YUV420 : JPEG_ENCODE_IN_FORMAT_RGB888,
         .sub_sample = JPEG_DOWN_SAMPLING_YUV420,
         .image_quality = quality,
     };
@@ -349,8 +361,8 @@ static esp_err_t write_jpeg(void *ctx, film_darkroom_image_t *image, const char 
 {
     (void)path;
     run_ctx_t *run = ctx;
-    /* 硬件编码器的 "RGB888" 在内存里是 B、G、R：原地交换 R 和 B */
-    for (uint16_t y = 0; y < image->height; ++y) {
+    /* 硬件编码器的 "RGB888" 在内存里是 B、G、R：原地交换 R 和 B（YUV420 不涉及） */
+    for (uint16_t y = 0; image->format == FILM_IMAGE_RGB888 && y < image->height; ++y) {
         uint8_t *p = image->pixels + (size_t)y * image->stride;
         for (uint16_t x = 0; x < image->width; ++x, p += 3) {
             const uint8_t r = p[0];
@@ -366,15 +378,24 @@ static esp_err_t write_jpeg(void *ctx, film_darkroom_image_t *image, const char 
         log_psram("JPEG output buffer");
         return ESP_ERR_NO_MEM;
     }
+    film_perf_mem("lab encode (input image + output buffer live)");
     uint32_t bytes = 0;
+    const int64_t encode_t0 = FILM_PERF_NOW();
+    int quality = JPEG_QUALITY;
     esp_err_t err = encode(run->lab, image, JPEG_QUALITY, out, capacity, &bytes);
     if (err == ESP_ERR_INVALID_STATE) {
+        quality = JPEG_QUALITY_FALLBACK;
         /* 输出缓冲装不下（编码器已释放 2D-DMA 通道），降一档质量再来一次 */
         ESP_LOGW(TAG, "JPEG q%d overflowed %u KB, retrying at q%d", JPEG_QUALITY, (unsigned)(capacity / 1024),
                  JPEG_QUALITY_FALLBACK);
         err = encode(run->lab, image, JPEG_QUALITY_FALLBACK, out, capacity, &bytes);
     }
-    film_blob_t *blob = err == ESP_OK ? exact_copy(out, bytes) : NULL;
+    FILM_PERF_LOG("lab", "jpeg encode %ux%u q%d: %u KB in %lld ms (out buffer %u KB) -> %s", (unsigned)image->width,
+                  (unsigned)image->height, quality, (unsigned)(bytes / 1024),
+                  (long long)((FILM_PERF_NOW() - encode_t0) / 1000), (unsigned)(capacity / 1024),
+                  esp_err_to_name(err));
+    /* 成片带 EXIF：拼接时复制一份恰好大小的缓冲（编码器输出缓冲按最坏情况预留，偏大） */
+    film_blob_t *blob = err == ESP_OK ? film_meta_make_blob(&run->job->shot, FILM_META_JPG, out, bytes) : NULL;
     heap_caps_free(out);
     if (err == ESP_OK && !blob) {
         err = ESP_ERR_NO_MEM;
@@ -405,13 +426,12 @@ static void source_done(void *ctx)
     run_ctx_t *run = ctx;
     run->timing->decode_us = run->decoder->decode_us;
     jpeg_source_close(run->decoder);
-    if (run->raw) {
-        film_blob_unref(run->raw);
-        run->raw = NULL;
-    } else {
+    if (!run->source_in_raw) {
         heap_caps_free(run->job->jpeg);
         run->job->jpeg = NULL;
     }
+    film_blob_unref(run->raw);   /* 退化路径下这一步释放解码器读的内存；正常路径只是放掉这边的引用 */
+    run->raw = NULL;
 }
 
 static void *image_alloc(size_t bytes, void *ctx)
@@ -545,12 +565,24 @@ static esp_err_t run_job(film_lab_handle_t lab, job_t *job, uint16_t *screen, fi
     }
     run_ctx_t run = { .lab = lab, .job = job, .root = root, .timing = timing, .report = !shot->preview_only };
     const film_photo_t id_only = { .id = shot->photo_id };
-    uint8_t *const jpeg = job->jpeg;   /* 交给 blob 之后解码器仍从这里读 */
+    /*
+     * 新照片都有自己的一份原片：拍摄时就是快门帧，重新冲洗另存时复制源照片的。
+     * 原片文件带 EXIF（含 Orientation），所以写盘用的是"复制 + 拼 EXIF"的一份；解码器仍读原来那份
+     * （不依赖解码库对 APP1 段的处理），解码完在 source_done 里释放。
+     * 复制失败（内存不足）时退回零拷贝：原片直接交给写盘任务，不带 EXIF，照片不丢。
+     */
+    uint8_t *const jpeg = job->jpeg;
     const size_t size = job->size;
-    /* 新照片都有自己的一份原片：拍摄时就是快门帧，重新冲洗另存时复制源照片的 */
     if (err == ESP_OK && !shot->preview_only) {
-        run.raw = film_blob_wrap(job->jpeg, job->size);
-        job->jpeg = NULL;   /* 归 blob 了 */
+        run.raw = film_meta_make_blob(shot, FILM_META_RAW, jpeg, size);
+        if (!run.raw) {
+            ESP_LOGW(TAG, "RAW without EXIF (no memory for the copy)");
+            run.raw = film_blob_wrap(jpeg, size);
+            if (run.raw) {
+                job->jpeg = NULL;           /* 归 blob 了；解码器仍从同一块内存读 */
+                run.source_in_raw = true;
+            }
+        }
         err = run.raw ? ESP_OK : ESP_ERR_NO_MEM;
         if (err == ESP_OK) {
             err = film_writer_file(lab->writer, root, &id_only, FILM_FILE_RAW, film_blob_ref(run.raw));
@@ -605,6 +637,9 @@ static void lab_task(void *arg)
         /* 先让取景停下并交出帧缓冲，再开始分配冲洗用的大块内存 */
         lab->config.on_busy(lab->config.ctx, true);
         lab_timing_t timing = { .begin = esp_timer_get_time() };
+        film_perf_mark(FILM_PERF_LAB_START);
+        film_perf_mem("lab start (viewfinder stopped)");
+        film_perf_cpu_reset();
 
         bool proof_sent = false;
         if (job.proof.uyvy) {
@@ -612,6 +647,7 @@ static void lab_task(void *arg)
             heap_caps_free((void *)job.proof.uyvy);
             job.proof.uyvy = NULL;
             timing.proof_us = esp_timer_get_time() - timing.begin;
+            film_perf_mark(FILM_PERF_PROOF_DONE);
         }
         /* 两张照片的大块缓冲同时放不下：上一张还在写盘就先等它写完 */
         if (!shot->preview_only) {
@@ -634,6 +670,9 @@ static void lab_task(void *arg)
                  (unsigned)(free_at_start / 1024));
         (void)heap_caps_monitor_local_minimum_free_size_stop();
         heap_caps_free(job.jpeg);
+        film_perf_mark(FILM_PERF_FULL_DONE);
+        film_perf_mem("lab end");
+        film_perf_cpu_report("develop");
         lab->config.on_busy(lab->config.ctx, false);
         ESP_LOGI(TAG, "%s %lu film=%d instant=%d -> %s in %lld ms, PSRAM free %u KB",
                  job.redevelop ? (shot->preview_only ? "preview" : "redevelop") : "shoot", (unsigned long)event_id,
@@ -767,6 +806,7 @@ static esp_err_t lab_init_in_task(film_lab_handle_t lab)
     ESP_RETURN_ON_ERROR(film_filter_create(&filter, &lab->filter), TAG, "filter");
     const film_darkroom_config_t darkroom = {
         .filter = lab->filter, .alloc = image_alloc, .free = image_free, .alloc_ctx = lab,
+        .full_format = FILM_IMAGE_YUV420,   /* 全分辨率 RGB888 要 9 MB 以上，PSRAM 放不下 */
     };
     ESP_RETURN_ON_ERROR(film_darkroom_create(&darkroom, &lab->darkroom), TAG, "darkroom");
     const jpeg_encode_engine_cfg_t encoder = { .timeout_ms = JPEG_TIMEOUT_MS };

@@ -52,6 +52,23 @@ void film_balance_measure(const uint8_t *pixels, size_t stride, int width, int h
                           film_tone_hist_t *ret_hist);
 
 /**
+ * 条带版统计：一次拿不到整幅图（全分辨率成片只有 YUV 整块）时，按行带依次喂入。
+ * 抽样点取自整幅图的绝对行号，结果与 film_balance_measure 对整幅图的统计逐位一致。
+ * hist 可为 NULL；由调用者提供存放处并在 finish 之前保持有效。
+ */
+typedef struct {
+    double sum[3];
+    uint32_t samples;
+    film_tone_hist_t *hist;
+} film_tone_accum_t;
+
+void film_balance_accum_begin(film_tone_accum_t *acc, film_tone_hist_t *hist);
+/** pixels 是整幅图第 row0 行起的 rows 行（RGB888，宽 width） */
+void film_balance_accum_rows(film_tone_accum_t *acc, const uint8_t *pixels, size_t stride, int width, int row0,
+                             int rows);
+void film_balance_accum_finish(const film_tone_accum_t *acc, film_tone_stats_t *ret_stats);
+
+/**
  * 求把 from 校正到 to 的编码（超出范围时截断）；任一组无效时返回 FILM_BALANCE_NONE。
  * from_hist 为 from 的直方图时按校正曲线精确求解，为 NULL 时用均值比近似（高光多时会少补）。
  */

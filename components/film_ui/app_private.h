@@ -161,7 +161,7 @@ typedef struct {
     uint8_t date_stamp;
     uint16_t roll;
     uint8_t frame;          /*!< 本卷已拍张数 0..36 */
-    uint8_t reserved;
+    uint8_t crop_43;        /*!< M6 取景范围：0 全画幅（默认，旧版本此字节恒为 0）、1 4:3 裁切 */
 } film_settings_t;
 
 /* ---------------------------------------------------------------- 缩略图缓存 */
@@ -380,6 +380,7 @@ struct film_app_t {
     uint32_t frame_seq;
     bool camera_ok;
     bool storage_ok;
+    int shots_left;             /*!< 按剩余空间估算还能拍几张，-1 表示未知 */
     bool preview_paused;        /*!< 已请求平台暂停取景转换（机身选择面板打开期间画面定格） */
 
     /* 屏幕休眠（app_power.c） */
@@ -428,6 +429,8 @@ extern const screen_ops_t g_screen_film;
 void app_go(film_app_t *app, screen_id_t screen);
 void app_toast(film_app_t *app, const char *text);
 void app_toast_error(film_app_t *app, esp_err_t err);
+/** 重新读取存储剩余空间并刷新 shots_left（启动、存储变化、保存完成时调用） */
+void app_refresh_shots_left(film_app_t *app);
 void app_feedback(film_app_t *app, film_feedback_t kind);
 void app_save_settings(film_app_t *app);
 uint32_t app_random(film_app_t *app);

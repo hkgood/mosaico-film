@@ -57,6 +57,7 @@ static film_shot_t make_request(film_app_t *app, const film_photo_t *src, int fi
         .film = (film_id_t)film,
         .exposure_ev = 0.0f,
         .instant = r->instant,
+        .crop_43 = !r->instant && !(src->flags & FILM_PHOTO_FULLFRAME),     /* 旧照片没有这一位：保持原来的 4:3 构图 */
         .date_stamp = (src->flags & FILM_PHOTO_DATE) != 0,
         .rot = (gfx_rot_t)src->rot,
         .seed = app_random(app),

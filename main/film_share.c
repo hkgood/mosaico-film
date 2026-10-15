@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 
 #include "esp_check.h"
 #include "esp_event.h"
@@ -17,6 +18,7 @@
 #include "esp_timer.h"
 #include "esp_wifi.h"
 #include "film_library.h"
+#include "film_perf.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "nvs.h"
@@ -43,6 +45,9 @@ static const char *TAG = "film_share";
 #define AP_PASSWORD_LEN     8
 #define AP_IP               "192.168.4.1"
 #define TOKEN_LEN           6
+#define TIME_POST_MAX       48          /*!< 手机校时请求体的最大字节数（"t=<秒>"） */
+#define TIME_VALID_AFTER    1735689600LL /*!< 2025-01-01；更早的时间一律当作手机/设备时钟错误 */
+#define TIME_VALID_BEFORE   4102444800LL /*!< 2100-01-01 */
 #define MAX_SHARE           64          /*!< 一次最多分享的张数 */
 #define FILE_CHUNK          4096
 #define HTTP_STACK          6144
@@ -201,16 +206,46 @@ static esp_err_t send_gallery(httpd_req_t *req)
         "grid-template-columns:repeat(auto-fill,minmax(260px,1fr))}figure{margin:0;background:#1b1a18;"
         "border-radius:8px;overflow:hidden;box-shadow:0 6px 20px #0008}img{width:100%;display:block;"
         "background:#26241f;min-height:120px}a{display:block;text-align:center;padding:12px;color:#ff9a3c;"
-        "text-decoration:none;font-weight:600;letter-spacing:.06em}footer{color:#5d5850;text-align:center;"
+        "text-decoration:none;font-weight:600;letter-spacing:.06em}.r{display:flex}.r a,.r button{flex:1;padding:10px 4px;"
+        "font-size:13px}button{background:none;border:0;border-top:1px solid #0003;color:#ff9a3c;font:inherit;"
+        "font-weight:600;letter-spacing:.06em}.sv{display:none}.bar{display:flex;gap:10px;padding:10px 14px 0}"
+        ".bar a,.bar button{flex:1;background:#1b1a18;border-radius:8px;padding:12px 4px;border:0;"
+        "font-size:14px}footer{color:#5d5850;text-align:center;"
         "padding:18px;font-size:12px}</style><header><h1>MOSAICO FILM</h1>");
-    snprintf(line, FILE_CHUNK, "<p>%u 张照片 · 点「保存」或长按图片存到手机</p></header><div class=g>",
+    snprintf(line, FILE_CHUNK, "<p>%u 张照片 · 每张照片都是完整分辨率，可存成片或传感器原片（RAW）</p></header>",
              (unsigned)count);
     httpd_resp_sendstr_chunk(req, line);
+    /* 工具栏：全部下载（成片 / 原片）与"存到相册"（系统分享面板；仅浏览器支持文件分享时才显示） */
+    httpd_resp_sendstr_chunk(req,
+        "<div class=bar><a href='#' onclick='all(0);return false'>全部下载</a>"
+        "<a href='#' onclick='all(1);return false'>全部原片</a>"
+        "<button class=sv onclick='sv(ids)'>全部存到相册</button></div><div class=g>");
+    /* 页面脚本：照片编号表 + 顺序下载 + 文件分享。设备没有 zip，"全部下载"逐张触发下载 */
+    snprintf(line, FILE_CHUNK, "<script>var T='%s',ids=[", token);
+    httpd_resp_sendstr_chunk(req, line);
+    for (size_t i = 0; i < count; ++i) {
+        snprintf(line, FILE_CHUNK, "%s%lu", i ? "," : "", (unsigned long)ids[i]);
+        httpd_resp_sendstr_chunk(req, line);
+    }
+    httpd_resp_sendstr_chunk(req,
+        "];function u(i,r){return '/s/'+T+'/'+i+(r?'_raw':'')+'.jpg'}"
+        "function all(r){var k=0;(function n(){if(k>=ids.length)return;var a=document.createElement('a');"
+        "a.href=u(ids[k],r)+'?dl=1';a.download='';document.body.appendChild(a);a.click();a.remove();k++;"
+        "setTimeout(n,900)})()}"
+        "async function sv(l){try{var f=[];for(var i of l){var b=await (await fetch(u(i,0))).blob();"
+        "f.push(new File([b],'MOSAICO_'+i+'.jpg',{type:'image/jpeg'}))}await navigator.share({files:f})}"
+        "catch(e){if(e.name!='AbortError')alert('无法直接存到相册，请用「保存」后在文件中查看，或长按图片')}}"
+        "if(navigator.canShare&&navigator.canShare({files:[new File([''],'a.jpg',{type:'image/jpeg'})]}))"
+        "document.querySelectorAll('.sv').forEach(function(e){e.style.display='block'});"
+        "fetch('/s/'+T+'/time',{method:'POST',body:'t='+Math.floor(Date.now()/1000)}).catch(function(){})</script>");
     for (size_t i = 0; i < count; ++i) {
         snprintf(line, FILE_CHUNK,
-                 "<figure><img loading=lazy src='/s/%s/%lu.jpg'><a href='/s/%s/%lu.jpg?dl=1' "
-                 "download='MOSAICO_%lu.jpg'>保存</a></figure>",
-                 token, (unsigned long)ids[i], token, (unsigned long)ids[i], (unsigned long)ids[i]);
+                 "<figure><img loading=lazy src='/s/%s/%lu.jpg'><div class=r>"
+                 "<a href='/s/%s/%lu.jpg?dl=1' download='MOSAICO_%lu.jpg'>保存</a>"
+                 "<a href='/s/%s/%lu_raw.jpg?dl=1' download='MOSAICO_%lu_RAW.jpg'>原片</a></div>"
+                 "<button class=sv onclick='sv([%lu])'>存到相册</button></figure>",
+                 token, (unsigned long)ids[i], token, (unsigned long)ids[i], (unsigned long)ids[i], token,
+                 (unsigned long)ids[i], (unsigned long)ids[i], (unsigned long)ids[i]);
         httpd_resp_sendstr_chunk(req, line);
     }
     httpd_resp_sendstr_chunk(req, "</div><footer>ESP-MOSAICO · FILM</footer></html>");
@@ -218,7 +253,8 @@ static esp_err_t send_gallery(httpd_req_t *req)
     return httpd_resp_sendstr_chunk(req, NULL);
 }
 
-static esp_err_t send_photo(httpd_req_t *req, uint32_t id, bool download)
+/* raw：传感器原片（_RAW.JPG，带 Orientation）；否则是成片 */
+static esp_err_t send_photo(httpd_req_t *req, uint32_t id, bool download, bool raw)
 {
     char path[FILM_PATH_MAX];
     int index = -1;
@@ -230,7 +266,7 @@ static esp_err_t send_photo(httpd_req_t *req, uint32_t id, bool download)
     }
     const char *root = s_share.root;
     if (index >= 0 && root) {
-        film_library_path(root, id, FILM_FILE_JPEG, path, sizeof(path));
+        film_library_path(root, id, raw ? FILM_FILE_RAW : FILM_FILE_JPEG, path, sizeof(path));
     }
     xSemaphoreGive(s_share.lock);
     if (index < 0 || !root) {
@@ -247,9 +283,10 @@ static esp_err_t send_photo(httpd_req_t *req, uint32_t id, bool download)
     }
     httpd_resp_set_type(req, "image/jpeg");
     httpd_resp_set_hdr(req, "Cache-Control", "private, max-age=600");
-    char disposition[48];
+    char disposition[56];
     if (download) {
-        snprintf(disposition, sizeof(disposition), "attachment; filename=\"MOSAICO_%lu.jpg\"", (unsigned long)id);
+        snprintf(disposition, sizeof(disposition), "attachment; filename=\"MOSAICO_%lu%s.jpg\"", (unsigned long)id,
+                 raw ? "_RAW" : "");
         httpd_resp_set_hdr(req, "Content-Disposition", disposition);
     }
     esp_err_t err = ESP_OK;
@@ -262,7 +299,7 @@ static esp_err_t send_photo(httpd_req_t *req, uint32_t id, bool download)
     if (err == ESP_OK) {
         err = httpd_resp_send_chunk(req, NULL, 0);
     }
-    if (err == ESP_OK && download) {
+    if (err == ESP_OK && download && !raw) {   /* "已保存"只按成片统计 */
         xSemaphoreTake(s_share.lock, portMAX_DELAY);
         if (index < 64 && !(s_share.downloaded & (1ull << index))) {
             s_share.downloaded |= 1ull << index;
@@ -289,11 +326,55 @@ static esp_err_t on_request(httpd_req_t *req)
     }
     char *end = NULL;
     const unsigned long id = strtoul(slash + 1, &end, 10);
-    if (!end || strncmp(end, ".jpg", 4) != 0 || id == 0) {
+    const bool raw = end && strncmp(end, "_raw.jpg", 8) == 0;
+    if (!end || id == 0 || (!raw && strncmp(end, ".jpg", 4) != 0)) {
         return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "bad photo");
     }
     const bool download = query && strstr(query, "dl=1");
-    return send_photo(req, (uint32_t)id, download);
+    return send_photo(req, (uint32_t)id, download, raw);
+}
+
+/*
+ * 手机校时：相册页打开时自动 POST /s/<令牌>/time，正文 "t=<Unix 秒>"。
+ * 只在本次开机还没有可信时间时采用（网络校时优先）；令牌错误、时间不合理一律拒绝。
+ * 设备没有 RTC，这是未联网时唯一的校时来源；校时之前拍的照片不写 EXIF 时间。
+ */
+static esp_err_t on_time_post(httpd_req_t *req)
+{
+    const char *uri = req->uri + 3;   /* 跳过 "/s/" */
+    const char *slash = strchr(uri, '/');
+    if (!slash || !token_ok(uri, (size_t)(slash - uri)) || strcmp(slash, "/time") != 0) {
+        return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "session expired");
+    }
+    if (req->content_len == 0 || req->content_len >= TIME_POST_MAX) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad body");
+    }
+    char body[TIME_POST_MAX];
+    size_t got = 0;
+    while (got < req->content_len) {
+        const int n = httpd_req_recv(req, body + got, req->content_len - got);
+        if (n <= 0) {
+            return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad body");
+        }
+        got += (size_t)n;
+    }
+    body[got] = '\0';
+    char *end = NULL;
+    const long long seconds = (strncmp(body, "t=", 2) == 0) ? strtoll(body + 2, &end, 10) : 0;
+    if (!end || *end != '\0' || seconds < TIME_VALID_AFTER || seconds >= TIME_VALID_BEFORE) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad time");
+    }
+    httpd_resp_set_type(req, "text/plain");
+    if (atomic_load(&s_time_synced)) {
+        return httpd_resp_sendstr(req, "kept");   /* 已有可信时间，不覆盖 */
+    }
+    const struct timeval tv = { .tv_sec = (time_t)seconds, .tv_usec = 0 };
+    if (settimeofday(&tv, NULL) != 0) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "set time");
+    }
+    atomic_store(&s_time_synced, true);
+    ESP_LOGI(TAG, "clock set from phone: %lld", seconds);
+    return httpd_resp_sendstr(req, "set");
 }
 
 static esp_err_t http_start(void)
@@ -308,7 +389,11 @@ static esp_err_t http_start(void)
     config.core_id = s_share.config.core;
     ESP_RETURN_ON_ERROR(httpd_start(&s_share.http, &config), TAG, "httpd start");
     const httpd_uri_t gallery = { .uri = "/s/*", .method = HTTP_GET, .handler = on_request };
-    const esp_err_t err = httpd_register_uri_handler(s_share.http, &gallery);
+    const httpd_uri_t clock = { .uri = "/s/*", .method = HTTP_POST, .handler = on_time_post };
+    esp_err_t err = httpd_register_uri_handler(s_share.http, &gallery);
+    if (err == ESP_OK) {
+        err = httpd_register_uri_handler(s_share.http, &clock);
+    }
     if (err != ESP_OK) {
         httpd_stop(s_share.http);
         s_share.http = NULL;
@@ -381,6 +466,7 @@ static void radio_off(void)
         s_share.wifi_inited = false;
     }
     s_share.radio = RADIO_OFF;
+    film_perf_mem("share: radio off");
 }
 
 static esp_err_t sta_connect(void)
@@ -466,6 +552,7 @@ static void lan_ready(void)
     xSemaphoreGive(s_share.lock);
     publish();
     ESP_LOGI(TAG, "sharing on %s", s_share.status.url);
+    film_perf_mem("share: up");
 }
 
 /* ---------------------------------------------------------------- 分享任务 */

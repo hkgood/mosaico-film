@@ -38,6 +38,8 @@
 /* 颗粒噪声表：长度为 2 的幂，每行从随机偏移处开始连续取值；表尾再复制 max_width 项免去取模 */
 #define FILM_GRAIN_TABLE_BITS   12
 #define FILM_GRAIN_TABLE_SIZE   (1u << FILM_GRAIN_TABLE_BITS)
+/* 颗粒的参考长边：以 1440 长边的成片为标准的颗粒大小 */
+#define FILM_GRAIN_REF_EDGE     1440u
 
 /* 像素风：长边固定 96 格（原型为 480 / 5） */
 #define FILM_PIXEL_COLUMNS      96
@@ -127,18 +129,42 @@ struct film_filter_t {
     /* 像素风的格子颜色（FILM_PIXEL_COLUMNS² 个 RGB）和"列 → 格子列"表（max_width 项） */
     uint8_t *pixel_cells;
     uint8_t *pixel_col_cell;
+    /* 分条带冲洗专用：像素风每格"行均值之和"（FILM_PIXEL_COLUMNS² × 3）和"行 → 格子行"表（max_height 项） */
+    uint32_t *pixel_sums;
+    uint8_t *pixel_row_cell;
+
+    /* 分条带冲洗的会话（film_filter_strip_*）：整幅图像的几何与参数，各条带调用之间保持不变 */
+    struct {
+        bool active;
+        film_develop_params_t params;
+        uint16_t width;
+        uint16_t height;
+        film_channel_order_t order;
+    } strip;
 };
 
 /** 一次冲洗在各遍之间共享的只读参数（查找表在句柄里，冲洗前建好） */
 typedef struct {
     film_filter_handle_t filter;
+    /*
+     * image 是当前要处理的像素：整图冲洗时就是整幅图像；分条带冲洗时是整幅图像从第 row0 行开始的一段。
+     * width / height 永远是整幅图像的尺寸，所有"相对位置"的效果（暗角、漏光、红晕网格、像素格）都按它换算。
+     */
     const film_image_t *image;
+    uint16_t width;
+    uint16_t height;
+    uint16_t row0;
     uint32_t seed;
     int32_t sat_q8;
     bool mono;
     bool halation;
     bool leak;
     bool grain;
+    /*
+     * 颗粒坐标缩放（Q16 的倒数）：整幅图长边超过 FILM_GRAIN_REF_EDGE 时，噪声坐标按比例放大，
+     * 颗粒占画面的比例与 1440 长边时一致（否则全分辨率下颗粒会细得看不见）；不超过时恒为 65536，即逐像素。
+     */
+    uint32_t grain_inv_q16;
     bool bgr;                                  /*!< 内存通道顺序为 B、G、R */
     bool exposure;                             /*!< 曝光补偿非零（像素风需要查 exposure_lut） */
     film_halation_grid_t grid;
@@ -147,6 +173,12 @@ typedef struct {
     uint16_t pixel_cols;                       /*!< 像素风格子列数 / 行数 */
     uint16_t pixel_rows;
 } film_develop_ctx_t;
+
+/** 整幅图像的第 y 行（绝对行号）在当前 image 里的地址 */
+static inline uint8_t *film_ctx_row(const film_develop_ctx_t *ctx, uint16_t y)
+{
+    return ctx->image->pixels + (size_t)(y - ctx->row0) * ctx->image->stride;
+}
 
 static inline int32_t film_clamp_i32(int32_t v, int32_t lo, int32_t hi)
 {
@@ -186,3 +218,7 @@ void film_halation_resolve(film_filter_handle_t handle, const film_halation_grid
 void film_pixel_prepare(film_develop_ctx_t *ctx);
 void film_pixel_cell_rows(const film_develop_ctx_t *ctx, uint16_t row0, uint16_t row1);
 void film_pixel_upsample_rows(const film_develop_ctx_t *ctx, uint16_t y0, uint16_t y1);
+/* 分条带：逐条带累计每格的行均值，最后统一求格子颜色（与整图冲洗逐位一致） */
+void film_pixel_strip_reset(const film_develop_ctx_t *ctx);
+void film_pixel_accumulate_rows(const film_develop_ctx_t *ctx, uint16_t y0, uint16_t y1);
+void film_pixel_strip_resolve(const film_develop_ctx_t *ctx);

@@ -33,9 +33,23 @@ extern "C" {
 #define FILM_ERR_STORAGE_FULL ESP_ERR_INVALID_SIZE
 #define FILM_ERR_NO_CAMERA    ESP_ERR_NOT_FOUND
 
-/** 取景尺寸：M6 为 4:3 横幅，SX-70 为方形 */
+/**
+ * 一张全分辨率照片在存储上的估算占用（原片 ≈0.5 MB + 成片 ≈1 MB + 屏幕图/缩略图 ≈0.3 MB，留余量）。
+ * 只用于"还能拍几张"的提示，不参与任何容量判定（真正写满由 ENOSPC 报 FILM_ERR_STORAGE_FULL）。
+ */
+#define FILM_SHOT_BYTES_ESTIMATE (2u * 1024u * 1024u)
+/** 剩余张数不超过这个值时，相机计数窗下的标签由 ROLL 换成 "N LEFT" */
+#define FILM_SHOTS_LEFT_WARN 99
+
+/** 取景尺寸：M6 全画幅为 3:4 竖幅（默认）或 4:3 横幅（裁切），SX-70 为方形 */
 #define FILM_VF_M6_W 480
 #define FILM_VF_M6_H 360
+/**
+ * M6 全画幅取景（取景方向 3:4 竖幅）：屏幕上取景窗口高 360，3:4 的画面宽 270，在窗口里居中（两侧留黑）。
+ * 缓冲按 FILM_VF_M6_W × FILM_VF_M6_H 个像素分配即可通用。
+ */
+#define FILM_VF_M6_FULL_W 270
+#define FILM_VF_M6_FULL_H 360
 #define FILM_VF_SX_W 360
 #define FILM_VF_SX_H 360
 
@@ -52,6 +66,7 @@ typedef struct {
     film_id_t film;
     float exposure_ev;
     bool instant;
+    bool crop_43;       /*!< M6 的取景范围：false 全画幅（默认）、true 4:3 裁切；instant 时忽略 */
 } film_preview_config_t;
 
 /** 一次拍摄（或重新冲洗）的完整参数 */
@@ -61,6 +76,11 @@ typedef struct {
     film_id_t film;
     float exposure_ev;
     bool instant;
+    /*
+     * M6 的取景范围：false 为传感器全画幅（默认），true 为中间 4:3 裁切；宝丽来恒为方形，忽略。
+     * 重新冲洗旧照片（元数据没有 FILM_PHOTO_FULLFRAME）时为 true，保持原来的构图。
+     */
+    bool crop_43;
     bool date_stamp;
     gfx_rot_t rot;           /*!< 握持方向：成片需要按此转正 */
     uint32_t seed;           /*!< 颗粒与漏光的随机种子 */
@@ -178,6 +198,8 @@ typedef struct {
 
     /* 存储：照片目录（NULL 表示存储不可用）与设置的持久化 */
     const char *(*storage_root)(void *ctx);
+    /** 存储剩余字节数（用来估算还能拍几张）；不可得返回 0，可为 NULL（界面不显示剩余张数） */
+    uint64_t (*storage_free)(void *ctx);
     bool (*settings_load)(void *ctx, void *data, size_t len);
     void (*settings_save)(void *ctx, const void *data, size_t len);
 

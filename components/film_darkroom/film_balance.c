@@ -77,16 +77,22 @@ static float apply_gain(float x, float g)
     return BALANCE_KNEE + (1.0f - BALANCE_KNEE) * (1.0f - powf(1.0f - u, n));
 }
 
-void film_balance_measure(const uint8_t *pixels, size_t stride, int width, int height, film_tone_stats_t *ret_stats,
-                          film_tone_hist_t *ret_hist)
+void film_balance_accum_begin(film_tone_accum_t *acc, film_tone_hist_t *hist)
 {
-    double sum[3] = { 0 };
-    if (ret_hist) {
-        memset(ret_hist, 0, sizeof(*ret_hist));
+    memset(acc, 0, sizeof(*acc));
+    acc->hist = hist;
+    if (hist) {
+        memset(hist, 0, sizeof(*hist));
     }
-    uint32_t samples = 0;
-    for (int y = BALANCE_STEP / 2; y < height; y += BALANCE_STEP) {
-        const uint8_t *p = pixels + (size_t)y * stride;
+}
+
+void film_balance_accum_rows(film_tone_accum_t *acc, const uint8_t *pixels, size_t stride, int width, int row0,
+                             int rows)
+{
+    /* 抽样行按整幅图的绝对行号定（与整幅一次统计取同一批像素），条带只处理落在自己范围内的行 */
+    int y = row0 + (BALANCE_STEP / 2 - row0 % BALANCE_STEP + BALANCE_STEP) % BALANCE_STEP;
+    for (; y < row0 + rows; y += BALANCE_STEP) {
+        const uint8_t *p = pixels + (size_t)(y - row0) * stride;
         for (int x = BALANCE_STEP / 2; x < width; x += BALANCE_STEP) {
             const uint8_t *px = p + (size_t)x * 3;
             const int hi = px[0] > px[1] ? (px[0] > px[2] ? px[0] : px[2]) : (px[1] > px[2] ? px[1] : px[2]);
@@ -94,19 +100,32 @@ void film_balance_measure(const uint8_t *pixels, size_t stride, int width, int h
                 continue;
             }
             for (int c = 0; c < 3; ++c) {
-                sum[c] += to_linear(px[c]);
-                if (ret_hist) {
-                    ++ret_hist->count[c][px[c]];
+                acc->sum[c] += to_linear(px[c]);
+                if (acc->hist) {
+                    ++acc->hist->count[c][px[c]];
                 }
             }
-            ++samples;
+            ++acc->samples;
         }
     }
-    ret_stats->samples = samples;
-    ret_stats->valid = samples >= BALANCE_MIN_SAMPLES;
+}
+
+void film_balance_accum_finish(const film_tone_accum_t *acc, film_tone_stats_t *ret_stats)
+{
+    ret_stats->samples = acc->samples;
+    ret_stats->valid = acc->samples >= BALANCE_MIN_SAMPLES;
     for (int c = 0; c < 3; ++c) {
-        ret_stats->mean[c] = samples ? (float)(sum[c] / samples) : 0.0f;
+        ret_stats->mean[c] = acc->samples ? (float)(acc->sum[c] / acc->samples) : 0.0f;
     }
+}
+
+void film_balance_measure(const uint8_t *pixels, size_t stride, int width, int height, film_tone_stats_t *ret_stats,
+                          film_tone_hist_t *ret_hist)
+{
+    film_tone_accum_t acc;
+    film_balance_accum_begin(&acc, ret_hist);
+    film_balance_accum_rows(&acc, pixels, stride, width, 0, height);
+    film_balance_accum_finish(&acc, ret_stats);
 }
 
 /* luma 以 1/16 档为单位（FINE_MIN..FINE_MAX），拆成粗字段 + 细分字段 */

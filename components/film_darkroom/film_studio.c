@@ -103,6 +103,7 @@ esp_err_t film_studio_process(const film_studio_config_t *config, const film_sho
         .seed = shot->seed,
         .light_leak = shot->light_leak,
         .instant = shot->instant,
+        .crop_43 = shot->crop_43,
         .rot = shot->rot,
         .stamp = stamp,
         .size = shot->preview_only ? FILM_DARKROOM_SCREEN : FILM_DARKROOM_FULL,
@@ -158,6 +159,7 @@ esp_err_t film_studio_process(const film_studio_config_t *config, const film_sho
         .balance = (uint16_t)balance,
     };
     meta->flags = (uint8_t)((shot->instant ? FILM_PHOTO_INSTANT : 0) | (stamp[0] ? FILM_PHOTO_DATE : 0) |
+                            (!shot->instant && !shot->crop_43 ? FILM_PHOTO_FULLFRAME : 0) |
                             (shot->source_id ? FILM_PHOTO_REDEVELOP : 0) |
                             (((balance >> FILM_BALANCE_FINE_SHIFT) & FILM_BALANCE_FINE_MASK)
                              << FILM_PHOTO_BALANCE_FINE_SHIFT));

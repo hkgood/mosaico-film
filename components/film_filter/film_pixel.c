@@ -4,6 +4,8 @@
  *
  * 格子最多 96×96 个，这一段用浮点计算即可，逐像素的放大只做查表拷贝。
  */
+#include <string.h>
+
 #include "film_filter_private.h"
 
 #define PIXEL_SATURATION    1.4f
@@ -121,8 +123,8 @@ static int quantize_cell(float *rgb, uint16_t cx, uint16_t cy)
  */
 void film_pixel_prepare(film_develop_ctx_t *ctx)
 {
-    uint16_t w = ctx->image->width;
-    uint16_t h = ctx->image->height;
+    uint16_t w = ctx->width;
+    uint16_t h = ctx->height;
     uint32_t longest = w > h ? w : h;
     /* 格子数与画面比例绑定，缩略图和大图的像素粒度一致 */
     uint16_t cols = div_round((uint32_t)w * FILM_PIXEL_COLUMNS, longest);
@@ -137,37 +139,101 @@ void film_pixel_prepare(film_develop_ctx_t *ctx)
     }
 }
 
+/* 一个格子的平均色 → 曝光、调色、抖动、量化，写入格子表 */
+static void store_cell(const film_develop_ctx_t *ctx, uint16_t cx, uint16_t cy, float rgb[FILM_CHANNELS])
+{
+    if (ctx->bgr) {
+        float b = rgb[0];
+        rgb[0] = rgb[2];
+        rgb[2] = b;
+    }
+    if (ctx->exposure) {
+        for (int c = 0; c < FILM_CHANNELS; c++) {
+            rgb[c] = ctx->filter->exposure_lut[(int)rgb[c]];
+        }
+    }
+    const uint8_t *color = s_palette[quantize_cell(rgb, cx, cy)];
+    /* 格子按图像的内存通道顺序存放，放大时直接拷贝 */
+    uint8_t *cell = ctx->filter->pixel_cells + ((size_t)cy * ctx->pixel_cols + cx) * FILM_CHANNELS;
+    cell[ctx->bgr ? 2 : 0] = color[0];
+    cell[1] = color[1];
+    cell[ctx->bgr ? 0 : 2] = color[2];
+}
+
 void film_pixel_cell_rows(const film_develop_ctx_t *ctx, uint16_t row0, uint16_t row1)
 {
     const film_image_t *image = ctx->image;
     const uint16_t cols = ctx->pixel_cols;
     const uint16_t rows = ctx->pixel_rows;
-    uint8_t *cells = ctx->filter->pixel_cells;
 
     for (uint16_t cy = row0; cy < row1; cy++) {
         uint16_t y0, y1;
-        cell_span(cy, rows, image->height, &y0, &y1);
+        cell_span(cy, rows, ctx->height, &y0, &y1);
         for (uint16_t cx = 0; cx < cols; cx++) {
             uint16_t x0, x1;
-            cell_span(cx, cols, image->width, &x0, &x1);
+            cell_span(cx, cols, ctx->width, &x0, &x1);
             float rgb[FILM_CHANNELS];
             box_mean(image, x0, x1, y0, y1, rgb);
-            if (ctx->bgr) {
-                float b = rgb[0];
-                rgb[0] = rgb[2];
-                rgb[2] = b;
+            store_cell(ctx, cx, cy, rgb);
+        }
+    }
+}
+
+/* ---------- 分条带 ---------- */
+
+void film_pixel_strip_reset(const film_develop_ctx_t *ctx)
+{
+    memset(ctx->filter->pixel_sums, 0,
+           (size_t)ctx->pixel_cols * ctx->pixel_rows * FILM_CHANNELS * sizeof(uint32_t));
+    /* 每个图像行属于哪一格子行（格子行的行范围互不重叠、首尾相接） */
+    for (uint16_t cy = 0; cy < ctx->pixel_rows; cy++) {
+        uint16_t y0, y1;
+        cell_span(cy, ctx->pixel_rows, ctx->height, &y0, &y1);
+        for (uint16_t y = y0; y < y1; y++) {
+            ctx->filter->pixel_row_cell[y] = (uint8_t)cy;
+        }
+    }
+}
+
+void film_pixel_accumulate_rows(const film_develop_ctx_t *ctx, uint16_t y0, uint16_t y1)
+{
+    const uint16_t cols = ctx->pixel_cols;
+    for (uint16_t y = y0; y < y1; y++) {
+        const uint8_t *row = film_ctx_row(ctx, y);
+        uint32_t *sums = ctx->filter->pixel_sums +
+                         (size_t)ctx->filter->pixel_row_cell[y] * cols * FILM_CHANNELS;
+        for (uint16_t cx = 0; cx < cols; cx++) {
+            uint16_t x0, x1;
+            cell_span(cx, cols, ctx->width, &x0, &x1);
+            const uint32_t cw = x1 - x0;
+            const uint8_t *px = row + (size_t)x0 * FILM_CHANNELS;
+            uint32_t row_sum[FILM_CHANNELS] = { 0 };
+            for (uint16_t x = x0; x < x1; x++, px += FILM_CHANNELS) {
+                row_sum[0] += px[0];
+                row_sum[1] += px[1];
+                row_sum[2] += px[2];
             }
-            if (ctx->exposure) {
-                for (int c = 0; c < FILM_CHANNELS; c++) {
-                    rgb[c] = ctx->filter->exposure_lut[(int)rgb[c]];
-                }
+            /* 与 box_mean 相同：先把每行的横向平均取整到 8 位，再累加 */
+            for (int c = 0; c < FILM_CHANNELS; c++) {
+                sums[(size_t)cx * FILM_CHANNELS + c] += (row_sum[c] * 2 + cw) / (cw * 2);
             }
-            const uint8_t *color = s_palette[quantize_cell(rgb, cx, cy)];
-            /* 格子按图像的内存通道顺序存放，放大时直接拷贝 */
-            uint8_t *cell = cells + ((size_t)cy * cols + cx) * FILM_CHANNELS;
-            cell[ctx->bgr ? 2 : 0] = color[0];
-            cell[1] = color[1];
-            cell[ctx->bgr ? 0 : 2] = color[2];
+        }
+    }
+}
+
+void film_pixel_strip_resolve(const film_develop_ctx_t *ctx)
+{
+    for (uint16_t cy = 0; cy < ctx->pixel_rows; cy++) {
+        uint16_t y0, y1;
+        cell_span(cy, ctx->pixel_rows, ctx->height, &y0, &y1);
+        const uint32_t ch = y1 - y0;
+        for (uint16_t cx = 0; cx < ctx->pixel_cols; cx++) {
+            const uint32_t *sum = ctx->filter->pixel_sums + ((size_t)cy * ctx->pixel_cols + cx) * FILM_CHANNELS;
+            float rgb[FILM_CHANNELS];
+            for (int c = 0; c < FILM_CHANNELS; c++) {
+                rgb[c] = (float)((sum[c] * 2 + ch) / (ch * 2));
+            }
+            store_cell(ctx, cx, cy, rgb);
         }
     }
 }
@@ -176,13 +242,13 @@ void film_pixel_upsample_rows(const film_develop_ctx_t *ctx, uint16_t y0, uint16
 {
     const film_image_t *image = ctx->image;
     const uint16_t w = image->width;
-    const uint16_t h = image->height;
+    const uint16_t h = ctx->height;
     const uint8_t *restrict col_cell = ctx->filter->pixel_col_cell;
 
     for (uint16_t y = y0; y < y1; y++) {
         uint16_t cy = (uint16_t)(((uint32_t)y * 2 + 1) * ctx->pixel_rows / (2u * h));
         const uint8_t *restrict cell_row = ctx->filter->pixel_cells + (size_t)cy * ctx->pixel_cols * FILM_CHANNELS;
-        uint8_t *restrict px = image->pixels + (size_t)y * image->stride;
+        uint8_t *restrict px = film_ctx_row(ctx, y);
         for (uint16_t x = 0; x < w; x++, px += FILM_CHANNELS) {
             const uint8_t *cell = cell_row + (size_t)col_cell[x] * FILM_CHANNELS;
             px[0] = cell[0];

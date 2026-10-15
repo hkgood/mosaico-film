@@ -46,10 +46,18 @@ static LUT_ATTR const uint16_t k_r565[CLAMP_LEN] = { REP832(R565) };
 static LUT_ATTR const uint16_t k_g565[CLAMP_LEN] = { REP832(G565) };
 static LUT_ATTR const uint16_t k_b565[CLAMP_LEN] = { REP832(B565) };
 
-void film_viewfinder_size(bool instant, uint16_t *ret_w, uint16_t *ret_h)
+void film_viewfinder_size(bool instant, bool crop_43, uint16_t *ret_w, uint16_t *ret_h)
 {
-    *ret_w = instant ? FILM_VF_SX_W : FILM_VF_M6_W;
-    *ret_h = instant ? FILM_VF_SX_H : FILM_VF_M6_H;
+    if (instant) {
+        *ret_w = FILM_VF_SX_W;
+        *ret_h = FILM_VF_SX_H;
+    } else if (crop_43) {
+        *ret_w = FILM_VF_M6_W;
+        *ret_h = FILM_VF_M6_H;
+    } else {
+        *ret_w = FILM_VF_M6_FULL_W;
+        *ret_h = FILM_VF_M6_FULL_H;
+    }
 }
 
 static inline uint8_t clamp_u8(int v)
@@ -88,7 +96,7 @@ void film_viewfinder_row_to_rgb888(const uint8_t *uyvy, uint32_t width, uint8_t 
     }
 }
 
-esp_err_t film_viewfinder_convert(const film_viewfinder_source_t *src, bool instant, uint16_t *out)
+esp_err_t film_viewfinder_convert(const film_viewfinder_source_t *src, bool instant, bool crop_43, uint16_t *out)
 {
     if (!src || !src->uyvy || !out) {
         return ESP_ERR_INVALID_ARG;
@@ -97,13 +105,14 @@ esp_err_t film_viewfinder_convert(const film_viewfinder_source_t *src, bool inst
         return ESP_ERR_INVALID_SIZE;
     }
     uint16_t vw, vh;
-    film_viewfinder_size(instant, &vw, &vh);
+    film_viewfinder_size(instant, crop_43, &vw, &vh);
     const size_t stride = src->stride ? src->stride : (size_t)src->width * 2u;
 
     /* 裁切块（传感器坐标）：全部行 × 居中的若干列，与暗房一致 */
     const uint32_t block_h = src->height;
-    const uint32_t block_w = instant ? src->height
-                                     : src->width * FILM_DARKROOM_M6_CROP_NUM / FILM_DARKROOM_M6_CROP_DEN;
+    const uint32_t block_w = instant   ? src->height
+                             : crop_43 ? src->width * FILM_DARKROOM_M6_CROP_NUM / FILM_DARKROOM_M6_CROP_DEN
+                                       : src->width;
     const uint32_t crop_x0 = (src->width - block_w) / 2u;
 
     for (uint32_t y0 = 0; y0 < vh; y0 += TILE_ROWS) {

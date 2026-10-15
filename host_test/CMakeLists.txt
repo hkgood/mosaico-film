@@ -40,8 +40,18 @@ add_executable(film_filter_test test_film_filter.c)
 target_link_libraries(film_filter_test PRIVATE film_filter)
 target_compile_options(film_filter_test PRIVATE -Wall -Wextra -Werror)
 
+add_executable(film_filter_strip_test test_film_filter_strip.c)
+target_link_libraries(film_filter_strip_test PRIVATE film_filter)
+target_compile_options(film_filter_strip_test PRIVATE -Wall -Wextra -Werror)
+
 enable_testing()
+add_executable(film_scale_test test_film_scale.c)
+target_link_libraries(film_scale_test PRIVATE film_filter m)
+target_compile_options(film_scale_test PRIVATE -Wall -Wextra -Werror)
+
 add_test(NAME film_filter_test COMMAND film_filter_test)
+add_test(NAME film_scale_test COMMAND film_scale_test)
+add_test(NAME film_filter_strip_test COMMAND film_filter_strip_test)
 
 # ---------------------------------------------------------------- 界面层（绘图、素材、二维码、film_ui）
 set(COMPONENTS_DIR "${CMAKE_CURRENT_LIST_DIR}/../components")
@@ -67,23 +77,43 @@ target_include_directories(film_ui PUBLIC "${COMPONENTS_DIR}/film_ui/include" PR
 target_link_libraries(film_ui PUBLIC film_filter film_gfx film_assets qrcodegen)
 target_compile_options(film_ui PRIVATE ${FILM_UI_WARNINGS})
 
+# ---------------------------------------------------------------- EXIF（纯 C，无依赖）
+add_library(film_exif STATIC "${COMPONENTS_DIR}/film_exif/film_exif.c")
+target_include_directories(film_exif PUBLIC "${COMPONENTS_DIR}/film_exif/include")
+target_compile_options(film_exif PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wno-sign-conversion)
+if(MATH_LIBRARY)
+    target_link_libraries(film_exif PUBLIC ${MATH_LIBRARY})
+endif()
+
+add_executable(film_exif_test test_film_exif.c)
+target_link_libraries(film_exif_test PRIVATE film_exif)
+target_compile_options(film_exif_test PRIVATE -Wall -Wextra -Werror -D_GNU_SOURCE)
+add_test(NAME film_exif_test COMMAND film_exif_test)
+
 # ---------------------------------------------------------------- 暗房（成片管线）
 add_library(film_darkroom STATIC
     "${COMPONENTS_DIR}/film_darkroom/film_balance.c"
     "${COMPONENTS_DIR}/film_darkroom/film_darkroom.c"
     "${COMPONENTS_DIR}/film_darkroom/film_studio.c"
-    "${COMPONENTS_DIR}/film_darkroom/film_viewfinder.c")
+    "${COMPONENTS_DIR}/film_darkroom/film_viewfinder.c"
+    "${COMPONENTS_DIR}/film_darkroom/film_yuv.c")
 target_include_directories(film_darkroom PUBLIC "${COMPONENTS_DIR}/film_darkroom/include")
 target_link_libraries(film_darkroom PUBLIC film_filter film_gfx film_assets film_ui)
 target_compile_options(film_darkroom PRIVATE ${FILM_UI_WARNINGS})
 
 add_executable(film_darkroom_test test_film_darkroom.c ppm_io.c)
-target_link_libraries(film_darkroom_test PRIVATE film_darkroom)
+target_link_libraries(film_darkroom_test PRIVATE film_darkroom film_exif)
 target_compile_options(film_darkroom_test PRIVATE -Wall -Wextra -Werror)
 target_compile_definitions(film_darkroom_test PRIVATE
     FILM_TEST_ASSETS="${COMPONENTS_DIR}/film_assets/assets.bin"
     FILM_TEST_SENSOR="${CMAKE_CURRENT_LIST_DIR}/../pc/assets/sensor_mock.ppm")
 add_test(NAME film_darkroom_test COMMAND film_darkroom_test "${CMAKE_CURRENT_BINARY_DIR}/darkroom_out")
+
+# YUV420 存放格式（布局对照 ESP 硬件编码器）与条带白平衡统计
+add_executable(film_yuv_test test_film_yuv.c)
+target_link_libraries(film_yuv_test PRIVATE film_darkroom)
+target_compile_options(film_yuv_test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME film_yuv_test COMMAND film_yuv_test)
 
 # 取景转换查表版与原公式逐位一致（直接编进 film_viewfinder.c，只借 film_darkroom 的头文件路径）
 add_executable(film_viewfinder_test test_film_viewfinder.c)

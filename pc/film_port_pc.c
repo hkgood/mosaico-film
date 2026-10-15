@@ -452,7 +452,7 @@ static const film_frame_t *pc_preview_acquire(void *ctx)
     /* 与真机一致：取景只显示原片（不加胶卷效果），胶卷在冲洗成片时才生效 */
     const film_darkroom_job_t job = {
         .film = FILM_ID_COUNT, .seed = (uint32_t)t,
-        .instant = p->preview_cfg.instant, .size = FILM_DARKROOM_VIEWFINDER,
+        .instant = p->preview_cfg.instant, .crop_43 = p->preview_cfg.crop_43, .size = FILM_DARKROOM_VIEWFINDER,
     };
     mem_source_t m;
     const film_darkroom_source_t source = mem_source(&m, &p->sensor);
@@ -742,7 +742,7 @@ esp_err_t film_port_pc_create(const film_port_pc_config_t *config, film_port_pc_
     pthread_cond_init(&p->wake, NULL);
 
     const film_filter_config_t pf = { .max_width = 480, .max_height = 480 };
-    const film_filter_config_t sf = { .max_width = 1440, .max_height = 1440, .parallel = true };
+    const film_filter_config_t sf = { .max_width = FILM_DARKROOM_MAX_EDGE, .max_height = FILM_DARKROOM_MAX_EDGE, .parallel = true };
     err = film_filter_create(&pf, &p->preview_filter);
     if (err == ESP_OK) {
         err = film_filter_create(&sf, &p->shot_filter);

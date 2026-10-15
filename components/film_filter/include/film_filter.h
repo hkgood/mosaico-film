@@ -93,6 +93,38 @@ esp_err_t film_filter_delete(film_filter_handle_t handle);
 esp_err_t film_filter_develop(film_filter_handle_t handle, const film_develop_params_t *params,
                               const film_image_t *image);
 
+/*
+ * ---- 分条带冲洗：整幅图像放不进内存时（全分辨率成片），一次只处理其中若干行 ----
+ *
+ * 结果与整图冲洗逐位一致。流程：
+ *
+ *   film_filter_strip_begin(整幅尺寸)
+ *   if (pre_pass != NONE) {
+ *       对每个条带（自上而下或任意顺序，每行恰好一次）：film_filter_strip_pre(条带, 起始行)
+ *           IN_PLACE：条带像素已被调色，调用者必须把它写回存放处，第二遍从调色后的像素开始
+ *           READ_ONLY：像素不变，只是在累计全图统计（像素风的格子颜色）
+ *       film_filter_strip_resolve()
+ *   }
+ *   对每个条带：film_filter_strip_finish(条带, 起始行)   // 之后条带即为成片像素
+ *   film_filter_strip_end()
+ *
+ * 条带的宽度、通道顺序必须与 begin 一致；同一时刻只能有一个会话，期间不能调用 film_filter_develop。
+ * 红晕胶卷的网格行按绝对行号划分，条带起止行不需要对齐。
+ */
+typedef enum {
+    FILM_STRIP_PRE_PASS_NONE = 0,   /*!< 不需要第一遍，直接 finish */
+    FILM_STRIP_PRE_PASS_IN_PLACE,   /*!< 第一遍会改写条带（调色），必须写回 */
+    FILM_STRIP_PRE_PASS_READ_ONLY,  /*!< 第一遍只读 */
+} film_strip_pre_pass_t;
+
+esp_err_t film_filter_strip_begin(film_filter_handle_t handle, const film_develop_params_t *params, uint16_t width,
+                                  uint16_t height, film_channel_order_t order);
+film_strip_pre_pass_t film_filter_strip_pre_pass(film_filter_handle_t handle);
+esp_err_t film_filter_strip_pre(film_filter_handle_t handle, const film_image_t *strip, uint16_t y0);
+esp_err_t film_filter_strip_resolve(film_filter_handle_t handle);
+esp_err_t film_filter_strip_finish(film_filter_handle_t handle, const film_image_t *strip, uint16_t y0);
+void film_filter_strip_end(film_filter_handle_t handle);
+
 /** 胶卷的稳定英文键名（如 "gold"），用于配置文件和日志；编号非法时返回 NULL */
 const char *film_filter_get_key(film_id_t film);
 

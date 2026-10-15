@@ -52,13 +52,14 @@ static void check_all_pixels(void)
 }
 
 /** 按 film_viewfinder.c 顶部的几何约定逐像素重算一帧 */
-static void reference_convert(const film_viewfinder_source_t *src, bool instant, uint16_t *out)
+static void reference_convert(const film_viewfinder_source_t *src, bool instant, bool crop_43, uint16_t *out)
 {
     uint16_t vw, vh;
-    vf_test_size(instant, &vw, &vh);
+    vf_test_size(instant, crop_43, &vw, &vh);
     const uint32_t block_h = src->height;
-    const uint32_t block_w = instant ? src->height
-                                     : src->width * FILM_DARKROOM_M6_CROP_NUM / FILM_DARKROOM_M6_CROP_DEN;
+    const uint32_t block_w = instant   ? src->height
+                             : crop_43 ? src->width * FILM_DARKROOM_M6_CROP_NUM / FILM_DARKROOM_M6_CROP_DEN
+                                       : src->width;
     const uint32_t crop_x0 = (src->width - block_w) / 2u;
     for (uint32_t y = 0; y < vh; ++y) {
         const uint32_t col = crop_x0 + block_w - 1u - ((2u * y + 1u) * block_w) / (2u * vh);
@@ -84,11 +85,14 @@ static void check_frames(void)
             uyvy[i] = (uint8_t)(seed >> 24);
         }
         const film_viewfinder_source_t src = { .uyvy = uyvy, .width = SENSOR_W, .height = SENSOR_H, .stride = stride };
-        for (int instant = 0; instant <= 1; ++instant) {
+        /* 三种取景：宝丽来方形、M6 4:3 裁切、M6 全画幅（3:4 竖幅） */
+        for (int mode = 0; mode < 3; ++mode) {
+            const bool instant = mode == 0, crop_43 = mode == 1;
             uint16_t vw, vh;
-            vf_test_size(instant, &vw, &vh);
-            CHECK(vf_test_convert(&src, instant, got) == ESP_OK);
-            reference_convert(&src, instant, want);
+            vf_test_size(instant, crop_43, &vw, &vh);
+            CHECK(vw * vh <= FILM_VF_M6_W * FILM_VF_M6_H);
+            CHECK(vf_test_convert(&src, instant, crop_43, got) == ESP_OK);
+            reference_convert(&src, instant, crop_43, want);
             CHECK(memcmp(got, want, sizeof(uint16_t) * vw * vh) == 0);
         }
     }

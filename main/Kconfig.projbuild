@@ -1,0 +1,13 @@
+menu "Mosaico Film"
+
+    config FILM_PERF_TRACE
+        bool "Performance trace logging"
+        default n
+        help
+            Print timing and memory trace lines (log tag "perf") for the shutter
+            timeline, the darkroom stages, JPEG encoding, NAND writes, the viewfinder
+            pipeline, heap usage and per-task CPU load. Intended for measurement
+            builds only: the extra logging and task snapshots cost a little CPU.
+            Read the lines with `python mosaico.py iris logs --grep perf`.
+
+endmenu

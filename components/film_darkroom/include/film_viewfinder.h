@@ -28,14 +28,18 @@ typedef struct {
     size_t stride;          /*!< 每行字节数，0 表示紧凑排列（width * 2） */
 } film_viewfinder_source_t;
 
-/** 取景帧尺寸：M6 为 480×360，宝丽来为 360×360 */
-void film_viewfinder_size(bool instant, uint16_t *ret_w, uint16_t *ret_h);
+/**
+ * 取景帧尺寸：宝丽来 360×360；M6 全画幅（crop_43 为假）270×360（3:4 竖幅，屏幕取景窗口高 360），
+ * 4:3 裁切 480×360 横幅。
+ * 与暗房成片同一取景范围（film_darkroom_job_t.crop_43）。
+ */
+void film_viewfinder_size(bool instant, bool crop_43, uint16_t *ret_w, uint16_t *ret_h);
 
 /**
- * 把一帧转换成取景帧，写入 out（紧凑排列，至少 film_viewfinder_size 给出的像素数）。
+ * 把一帧转换成取景帧，写入 out（紧凑排列，至少 film_viewfinder_size 给出的像素数；缓冲按 FILM_VF_M6_W × FILM_VF_M6_H 个像素分配即可）。
  * 传感器必须是横幅（width >= height），否则返回 ESP_ERR_INVALID_SIZE。
  */
-esp_err_t film_viewfinder_convert(const film_viewfinder_source_t *src, bool instant, uint16_t *out);
+esp_err_t film_viewfinder_convert(const film_viewfinder_source_t *src, bool instant, bool crop_43, uint16_t *out);
 
 /**
  * 一行 UYVY → RGB888（R、G、B 字节顺序，与取景同一套 BT.601 有限范围换算），width 须为偶数。

@@ -6,6 +6,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "film_perf.h"
 #include "film_still.h"
 #include "film_viewfinder.h"
 #include "freertos/FreeRTOS.h"
@@ -71,6 +72,15 @@ struct film_camera_t {
     uint32_t stat_frames;
     int64_t stat_since;
     int64_t stat_convert_us;
+#ifdef CONFIG_FILM_PERF_TRACE
+    /* 取景每帧分段耗时（perf vf）：采集等待、界面取走延迟、因界面没取走而丢掉的帧 */
+    int64_t perf_wait_us;           /*!< mosaico_camera_get_frame 等帧的累计时间 */
+    uint32_t perf_wait_frames;
+    int64_t perf_publish_us[SLOT_COUNT];    /*!< 各槽最近一次发布的时刻（相机任务写，界面任务读，lock 保护） */
+    int64_t perf_latency_us;        /*!< 发布 → 界面取走 的累计时间 */
+    uint32_t perf_acquired;
+    uint32_t perf_dropped;          /*!< 取到帧但没有空槽（界面没跟上），直接丢弃的帧数 */
+#endif
 };
 
 /* ---------------------------------------------------------------- 取景缓冲 */
@@ -100,7 +110,11 @@ static void publish_slot(film_camera_handle_t cam, int slot, uint16_t w, uint16_
     cam->slots[slot].frame.height = h;
     cam->slots[slot].frame.seq = ++cam->seq;
     cam->ready_slot = (int8_t)slot;
+#ifdef CONFIG_FILM_PERF_TRACE
+    cam->perf_publish_us[slot] = esp_timer_get_time();
+#endif
     xSemaphoreGive(cam->lock);
+    film_perf_preview_frame();
 }
 
 const film_frame_t *film_camera_acquire(film_camera_handle_t cam)
@@ -109,6 +123,10 @@ const film_frame_t *film_camera_acquire(film_camera_handle_t cam)
     xSemaphoreTake(cam->lock, portMAX_DELAY);
     if (cam->ready_slot >= 0) {
         frame = &cam->slots[cam->ready_slot].frame;
+#ifdef CONFIG_FILM_PERF_TRACE
+        cam->perf_latency_us += esp_timer_get_time() - cam->perf_publish_us[cam->ready_slot];
+        ++cam->perf_acquired;
+#endif
         cam->held_mask |= (uint8_t)(1u << cam->ready_slot);
         cam->ready_slot = -1;
     }
@@ -257,16 +275,46 @@ static void camera_detach(film_camera_handle_t cam)
 
 /* ---------------------------------------------------------------- 取景一帧 */
 
+#ifdef CONFIG_FILM_PERF_TRACE
+/** 取景分段耗时：采集等待 / 转换 / 到界面取走的延迟 / 丢帧；并附带内存与各任务 CPU 占用 */
+static void perf_report_viewfinder(film_camera_handle_t cam, float seconds)
+{
+    xSemaphoreTake(cam->lock, portMAX_DELAY);
+    const uint32_t acquired = cam->perf_acquired;
+    const float latency_ms = acquired ? (float)cam->perf_latency_us / 1000.0f / (float)acquired : 0.0f;
+    const uint32_t dropped = cam->perf_dropped;
+    cam->perf_latency_us = 0;
+    cam->perf_acquired = 0;
+    cam->perf_dropped = 0;
+    xSemaphoreGive(cam->lock);
+    FILM_PERF_LOG("vf",
+                  "fps %.1f | capture_wait %.1f ms | convert %.1f ms | ui_pickup_latency %.1f ms "
+                  "(ui took %u frames) | dropped_no_slot %u",
+                  cam->stat_frames / seconds,
+                  cam->perf_wait_frames ? (float)cam->perf_wait_us / 1000.0f / (float)cam->perf_wait_frames : 0.0f,
+                  cam->stat_frames ? (float)cam->stat_convert_us / 1000.0f / (float)cam->stat_frames : 0.0f,
+                  latency_ms, (unsigned)acquired, (unsigned)dropped);
+    cam->perf_wait_us = 0;
+    cam->perf_wait_frames = 0;
+    film_perf_mem("viewfinder");
+    film_perf_cpu_report("viewfinder");
+}
+#endif
+
 static void log_stats(film_camera_handle_t cam)
 {
     const int64_t now = esp_timer_get_time();
     if (cam->stat_since == 0) {
         cam->stat_since = now;
+        film_perf_cpu_reset();
     } else if (now - cam->stat_since >= STATS_INTERVAL_US) {
         const float seconds = (float)(now - cam->stat_since) / 1e6f;
         ESP_LOGI(TAG, "preview %.1f fps, convert %.1f ms, PSRAM free %u KB", cam->stat_frames / seconds,
                  cam->stat_frames ? (float)cam->stat_convert_us / 1000.0f / (float)cam->stat_frames : 0.0f,
                  (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024));
+#ifdef CONFIG_FILM_PERF_TRACE
+        perf_report_viewfinder(cam, seconds);
+#endif
         cam->stat_frames = 0;
         cam->stat_convert_us = 0;
         cam->stat_since = now;
@@ -282,17 +330,29 @@ static void log_stats(film_camera_handle_t cam)
 static esp_err_t preview_step(film_camera_handle_t cam, const film_preview_config_t *pv, bool convert)
 {
     mosaico_camera_frame_t frame = { 0 };
+#ifdef CONFIG_FILM_PERF_TRACE
+    const int64_t wait_t0 = esp_timer_get_time();
+#endif
     ESP_RETURN_ON_ERROR(mosaico_camera_get_frame(cam->camera, &frame), TAG, "get frame");
+#ifdef CONFIG_FILM_PERF_TRACE
+    cam->perf_wait_us += esp_timer_get_time() - wait_t0;
+    ++cam->perf_wait_frames;
+#endif
     const int slot = convert ? pick_write_slot(cam) : -1;
+#ifdef CONFIG_FILM_PERF_TRACE
+    if (convert && slot < 0) {
+        ++cam->perf_dropped;
+    }
+#endif
     if (slot >= 0) {
         const int64_t t0 = esp_timer_get_time();
         const film_viewfinder_source_t src = {
             .uyvy = frame.data, .width = frame.width, .height = frame.height, .stride = frame.bytes_per_line,
         };
-        const esp_err_t err = film_viewfinder_convert(&src, pv->instant, cam->slots[slot].pixels);
+        const esp_err_t err = film_viewfinder_convert(&src, pv->instant, pv->crop_43, cam->slots[slot].pixels);
         if (err == ESP_OK) {
             uint16_t vw, vh;
-            film_viewfinder_size(pv->instant, &vw, &vh);
+            film_viewfinder_size(pv->instant, pv->crop_43, &vw, &vh);
             publish_slot(cam, slot, vw, vh);
             cam->stat_frames++;
             cam->stat_convert_us += esp_timer_get_time() - t0;
@@ -329,6 +389,7 @@ static film_viewfinder_source_t grab_proof(film_camera_handle_t cam)
         };
     }
     (void)mosaico_camera_return_frame(cam->camera, &frame);
+    film_perf_mark(FILM_PERF_PROOF_GRABBED);
     return proof;
 }
 
@@ -338,6 +399,7 @@ static void capture(film_camera_handle_t cam, const film_shot_t *shot)
     const film_viewfinder_source_t proof = grab_proof(cam);
     /* 取景流在暂停期间一直关着（驱动帧缓冲让给暗房），由主循环在恢复时重开 */
     stream_stop(cam);
+    film_perf_mark(FILM_PERF_STREAM_STOPPED);
     esp_err_t err = film_still_capture(&still);
     xSemaphoreTake(cam->lock, portMAX_DELAY);
     cam->capturing = false;

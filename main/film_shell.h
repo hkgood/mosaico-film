@@ -36,12 +36,20 @@ typedef struct {
     void *ctx;
 } film_shell_intro_t;
 
-/** 一个统计周期内的界面绘制耗时（只统计 film_app_render，不含 Canvas 拷贝与屏幕刷新） */
+/**
+ * 一个统计周期内的界面耗时。avg_us / max_us 只统计 film_app_render（界面绘制），
+ * 其余字段是送显链路上另外两段：
+ *   commit  界面绘制完、调用 esp_gsp_canvas_invalidate* 把脏区交给 GSP 的耗时（渲染任务内同步部分）
+ *   draw    GSP 渲染任务回调 shell_draw 把画面拷进 Canvas 的次数与耗时（屏幕实际送显的次数代理）
+ */
 typedef struct {
     uint32_t period_ms;
     uint32_t frames;                /*!< 周期内重绘了几帧 */
     uint32_t avg_us;
     uint32_t max_us;
+    uint32_t commit_avg_us;
+    uint32_t draw_calls;
+    uint32_t draw_avg_us;
 } film_shell_stats_t;
 
 typedef struct {

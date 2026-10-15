@@ -18,6 +18,7 @@
 #include "esp_littlefs.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "film_perf.h"
 #include "spi_nand_flash.h"
 
 static const char *TAG = "film_storage";
@@ -153,6 +154,7 @@ void film_storage_warm_up(void)
     }
     /* 比内联上限大，才会真正分配数据块 */
     static const uint8_t pad[WARM_UP_BYTES];
+    film_perf_mem("storage warm-up: before");
     const int64_t t0 = esp_timer_get_time();
     FILE *f = fopen(WARM_UP_PATH, "wb");
     bool ok = f && fwrite(pad, 1, sizeof(pad), f) == sizeof(pad);
@@ -162,6 +164,7 @@ void film_storage_warm_up(void)
     remove(WARM_UP_PATH);
     ESP_LOGI(TAG, "allocator warm-up %s in %lld ms", ok ? "done" : "failed",
              (long long)((esp_timer_get_time() - t0) / 1000));
+    film_perf_mem("storage warm-up: after");
 }
 
 uint64_t film_storage_free_bytes(void)

@@ -48,6 +48,17 @@ void app_toast(film_app_t *app, const char *text)
     app->dirty = true;
 }
 
+void app_refresh_shots_left(film_app_t *app)
+{
+    app->shots_left = -1;
+    if (!app->storage_ok || !app->port->storage_free) {
+        return;
+    }
+    const uint64_t free_bytes = app->port->storage_free(app->port->ctx);
+    const uint64_t shots = free_bytes / FILM_SHOT_BYTES_ESTIMATE;
+    app->shots_left = shots > 9999 ? 9999 : (int)shots;
+}
+
 void app_toast_error(film_app_t *app, esp_err_t err)
 {
     switch (err) {
@@ -105,6 +116,7 @@ void app_update_preview(film_app_t *app)
         .film = (film_id_t)app->settings.film,
         .exposure_ev = app->cam.ev,
         .instant = app->settings.instant != 0,
+        .crop_43 = app->settings.crop_43 != 0,
     };
     app->port->preview_config(app->port->ctx, &cfg);
 }
@@ -440,6 +452,7 @@ static void handle_event(film_app_t *app, const film_event_t *ev)
         if (app->library && film_library_add(app->library, &ev->meta) == ESP_OK) {
             forget_thumb(app, ev->meta.id);
         }
+        app_refresh_shots_left(app);
         break;
     case FILM_EVT_SHOT_FAILED:
         app_toast_error(app, ev->err);
@@ -454,6 +467,7 @@ static void handle_event(film_app_t *app, const film_event_t *ev)
             app->library = NULL;
             app->storage_ok = false;
         }
+        app_refresh_shots_left(app);
         break;
     }
     default:
@@ -535,6 +549,7 @@ esp_err_t film_app_create(const film_app_config_t *config, film_app_handle_t *re
         const film_library_config_t cfg = { .root = root };
         app->storage_ok = film_library_create(&cfg, &app->library) == ESP_OK;
     }
+    app_refresh_shots_left(app);
     app->rot = GFX_ROT_0;
     app->rot_candidate = GFX_ROT_0;
     app->cam.film_pos = (float)app->settings.film;

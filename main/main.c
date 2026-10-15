@@ -30,6 +30,7 @@
 #include "film_assets.h"
 #include "film_boot.h"
 #include "film_feedback.h"
+#include "film_perf.h"
 #include "film_port_dev.h"
 #include "film_remote_input.h"
 #include "film_shell.h"
@@ -69,6 +70,10 @@ static void report_render_stats(const film_shell_stats_t *stats)
 {
     ESP_LOGI(TAG, "render: %" PRIu32 " frames / %" PRIu32 " ms, avg %" PRIu32 " us, max %" PRIu32 " us",
              stats->frames, stats->period_ms, stats->avg_us, stats->max_us);
+    FILM_PERF_LOG("ui", "render %" PRIu32 " frames / %" PRIu32 " ms (%.1f fps) | draw avg %" PRIu32
+                  " us | commit avg %" PRIu32 " us | canvas copies %" PRIu32 " avg %" PRIu32 " us",
+                  stats->frames, stats->period_ms, 1000.0 * stats->frames / (double)stats->period_ms, stats->avg_us,
+                  stats->commit_avg_us, stats->draw_calls, stats->draw_avg_us);
 }
 
 static void *frame_alloc(size_t bytes)
@@ -231,4 +236,5 @@ void app_main(void)
              (unsigned)(heap_caps_get_free_size(MALLOC_CAP_SPIRAM) / 1024),
              (unsigned)(heap_caps_get_total_size(MALLOC_CAP_SPIRAM) / 1024),
              (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
+    film_perf_mem("boot: services ready");
 }

@@ -9,6 +9,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "film_perf.h"
 #include "film_port.h"
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
@@ -133,6 +134,8 @@ struct film_writer_t {
     /* 以下只在写盘任务里使用：当前这张照片的写盘结果 */
     esp_err_t photo_err;
     int64_t photo_t0;
+    size_t photo_bytes;         /*!< 这张照片已写入的字节数（perf write 用） */
+    int64_t photo_write_us;     /*!< 其中花在 NAND 写入上的时间（不含排队等待） */
 };
 
 static void remove_files(const char *root, uint32_t id)
@@ -169,8 +172,15 @@ static void finish_photo(film_writer_handle_t w, const item_t *item)
     ESP_LOGI(TAG, "photo %lu %s in %lld ms", (unsigned long)item->meta.id,
              err == ESP_OK ? "saved" : esp_err_to_name(err),
              w->photo_t0 ? (long long)((esp_timer_get_time() - w->photo_t0) / 1000) : 0LL);
+    FILM_PERF_LOG("write", "photo %lu total %u KB, pure write time %lld ms (%.0f KB/s), wall %lld ms",
+                  (unsigned long)item->meta.id, (unsigned)(w->photo_bytes / 1024),
+                  (long long)(w->photo_write_us / 1000),
+                  w->photo_write_us ? (double)w->photo_bytes / 1024.0 * 1e6 / (double)w->photo_write_us : 0.0,
+                  w->photo_t0 ? (long long)((FILM_PERF_NOW() - w->photo_t0) / 1000) : 0LL);
     w->photo_err = ESP_OK;
     w->photo_t0 = 0;
+    w->photo_bytes = 0;
+    w->photo_write_us = 0;
 }
 
 static void process(film_writer_handle_t w, item_t *item)
@@ -184,6 +194,7 @@ static void process(film_writer_handle_t w, item_t *item)
     }
     /* 这张照片已经有一项失败：后面的就不必再写了，commit 时统一清理 */
     if (w->photo_err == ESP_OK) {
+        const int64_t write_t0 = FILM_PERF_NOW();
         char path[FILM_PATH_MAX];
         if (item->kind == ITEM_FILE) {
             film_library_path(item->root, item->meta.id, item->file, path, sizeof(path));
@@ -192,6 +203,16 @@ static void process(film_writer_handle_t w, item_t *item)
             w->photo_err = film_library_write_raw(item->root, &item->meta, item->file, film_blob_data(item->blob),
                                                   item->width, item->height);
         }
+        const int64_t write_us = FILM_PERF_NOW() - write_t0;
+        const size_t bytes = film_blob_size(item->blob);
+        FILM_PERF_LOG("write", "file %s %u KB in %lld ms (%.0f KB/s) -> %s",
+                      item->kind == ITEM_FILE ? (item->file == FILM_FILE_RAW ? "RAW" : "JPG")
+                                              : (item->file == FILM_FILE_SCREEN ? "SCR" : "THM"),
+                      (unsigned)(bytes / 1024), (long long)(write_us / 1000),
+                      write_us ? (double)bytes / 1024.0 * 1e6 / (double)write_us : 0.0,
+                      esp_err_to_name(w->photo_err));
+        w->photo_bytes += bytes;
+        w->photo_write_us += write_us;
     }
     film_blob_unref(item->blob);
 }

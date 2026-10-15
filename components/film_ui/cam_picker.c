@@ -47,9 +47,18 @@ typedef struct {
 } body_info_t;
 
 static const body_info_t k_bodies[2] = {
-    { "M6", "RANGEFINDER  \xC2\xB7  4 : 3", false },
+    { "M6", "RANGEFINDER", false },     /* 副标题随取景范围变化，见 body_sub */
     { "SX-70", "INSTANT  \xC2\xB7  1 : 1", true },
 };
+
+/** 卡片副标题：M6 带当前取景范围（全画幅 3:4 / 4:3 裁切），点已在用的 M6 卡片切换 */
+static const char *body_sub(const film_app_t *app, int i)
+{
+    if (k_bodies[i].instant) {
+        return k_bodies[i].sub;
+    }
+    return app->settings.crop_43 ? "RANGEFINDER  \xC2\xB7  4 : 3 CROP" : "RANGEFINDER  \xC2\xB7  3 : 4 FULL";
+}
 
 /* ---------------------------------------------------------------- 几何 */
 
@@ -230,7 +239,7 @@ static void draw_card(film_app_t *app, gfx_canvas_t *c, int i)
     gfx_text(c, &name, r.x + r.w / 2, r.y + r.h + 15, b->name);
     const gfx_text_style_t sub =
         ui_style(&font_jost_m11, UI_TEXT_LABEL, 0.2f, COLOR_MUTED, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
-    gfx_text(c, &sub, r.x + r.w / 2, r.y + r.h + 32, b->sub);
+    gfx_text(c, &sub, r.x + r.w / 2, r.y + r.h + 32, body_sub(app, i));
 }
 
 void cam_picker_render(film_app_t *app, gfx_canvas_t *c)
@@ -371,7 +380,16 @@ bool cam_picker_gesture(film_app_t *app, const gesture_t *g)
             cam->picker_open = false;
             cam->picker_pressed = -1;
             if (k_bodies[card].instant == (app->settings.instant != 0)) {
-                app_feedback(app, FILM_FEEDBACK_CLICK);
+                if (!k_bodies[card].instant) {
+                    /* 点已在用的 M6：切换取景范围，面板留着让人看到副标题变化 */
+                    app->settings.crop_43 = !app->settings.crop_43;
+                    app_save_settings(app);
+                    app_update_preview(app);
+                    cam->picker_open = true;
+                    app_feedback(app, FILM_FEEDBACK_DETENT);
+                } else {
+                    app_feedback(app, FILM_FEEDBACK_CLICK);
+                }
             } else {
                 cam_switch_body(app, k_bodies[card].instant);   /* 内部会关掉弹出层，面板随后收起 */
             }

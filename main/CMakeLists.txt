@@ -17,12 +17,14 @@ idf_component_register(
         "film_share.c"
         "film_remote_input.c"
         "film_shutter_key.c"
+        "film_perf.c"
+        "film_meta.c"
     INCLUDE_DIRS "."
     REQUIRES esp_iris esp-mosaico-bsp esp_mosaico_app_recovery
         esp_mosaico_gsp_bundle esp_mosaico_gsp_iris freertos nvs_flash
         esp-gsp film_ui
     PRIV_REQUIRES esp_timer esp_app_format esp_display_present esp_lcd esp_partition
-        film_filter film_gfx film_assets film_darkroom
+        film_filter film_gfx film_assets film_darkroom film_exif
         mosaico_module_camera mosaico_module_mgr esp_driver_jpeg esp_driver_gpio esp_driver_spi esp_mm
         espressif__esp_video espressif__esp_cam_sensor espressif__esp_new_jpeg
         espressif__spi_nand_flash joltwallet__littlefs
