@@ -299,6 +299,42 @@ int main(int argc, char **argv)
     /* 面板打开期间取景定格、平台暂停帧转换；面板静止时整页不重绘 */
     CHECK(s.app->cam.overlay == CAM_OVL_PICKER && s.app->preview_paused);
     CHECK(count_redraws(&s, 600) == 0);
+
+    /* 面板底部的 SETTINGS 行 → 设置页：每行一点即切换并保存，回到取景页时面板已收起 */
+    tap(&s, 240, 302);
+    wait_ms(&s, 300);
+    CHECK(s.app->screen == SCR_SETTINGS);
+    snap(&s, "settings_page");
+    const film_settings_t before = s.app->settings;
+    tap(&s, 240, 100);              /* 跳过开机动画 */
+    CHECK(s.app->settings.skip_boot == 1);
+    tap(&s, 240, 154);              /* 声音 */
+    CHECK(s.app->settings.sound_off == 1);
+    tap(&s, 240, 208);              /* 振动 */
+    CHECK(s.app->settings.haptic_off == 1);
+    tap(&s, 240, 262);              /* 胶卷取景 */
+    CHECK(s.app->settings.film_look == !before.film_look);
+    tap(&s, 240, 316);              /* 关屏时长：30 秒 → 1 分钟 */
+    CHECK(s.app->settings.screen_timeout == 1);
+    wait_ms(&s, 100);
+    snap(&s, "settings_toggled");
+    for (int i = 0; i < FILM_SCREEN_TIMEOUT_LEVELS - 1; ++i) {
+        tap(&s, 240, 316);          /* 循环一圈回到默认档 */
+    }
+    CHECK(s.app->settings.screen_timeout == 0);
+    tap(&s, 240, 100);
+    tap(&s, 240, 154);
+    tap(&s, 240, 208);
+    tap(&s, 240, 262);
+    CHECK(memcmp(&s.app->settings, &before, sizeof(before)) == 0);
+    tap(&s, 240, 400);              /* 点关于卡片不会切换任何设置 */
+    CHECK(memcmp(&s.app->settings, &before, sizeof(before)) == 0);
+    tap(&s, 40, 30);                /* 返回键 */
+    wait_ms(&s, 300);
+    CHECK(s.app->screen == SCR_CAMERA && s.app->cam.overlay != CAM_OVL_PICKER);
+    drag(&s, 240, 8, 240, 280, 300);
+    CHECK(s.app->cam.overlay == CAM_OVL_PICKER);
+
     tap(&s, 352, 162);
     wait_ms(&s, 1200);
     CHECK(!s.app->preview_paused);

@@ -161,6 +161,43 @@ Development is also postponed while the battery is ≤5 % and not charging
 Post-shot animations (M6 hold/reveal/fly, SX-70 developing page) do not wait
 for the full-resolution develop and are skipped by the next shutter or tap.
 
+### Camera boards and "camera not connected"
+
+Two camera boards exist in the field and `film_camera.c` has to cope with both:
+
+| Board | Viewfinder | Still |
+| --- | --- | --- |
+| OV3640 | UYVY 640×480 | 2048×1536 JPEG (`film_still.c`) |
+| SC101IOT | UYVY 640×480 (15 fps profile) or the 1280×720 default | the viewfinder frame, JPEG-encoded by the lab (`film_still_t.from_frame`), so 640×480 / 960×720 |
+
+Root cause of the reported "camera not connected": the firmware built only the
+SC101IOT 1280×720 profiles while the app requested 640×480, so
+`mosaico_camera_open` returned `ESP_ERR_NOT_SUPPORTED` (format mismatch) and the
+retry loop never succeeded. `sdkconfig.defaults` now also enables
+`CONFIG_CAMERA_SC101IOT_DVP_YUV422_640X480_15FPS`; existing build directories
+need that symbol set (or `idf.py fullclean`).
+
+`camera_attach` is a small ladder: 640×480 first, then the sensor default
+(`0×0`) when the format is not supported; a present module whose EEPROM
+descriptor is invalid is claimed with `allow_unidentified` (the sensor ID check
+still rejects anything that is not an OV3640/SC101IOT). 16:9 frames are reduced
+to their centred 4:3 window (`film_viewfinder_window_43`) before cropping, so
+viewfinder, proof and still share one geometry. The reason for a failed attach
+is logged once per change and shown in Settings → About (`NO MODULE`,
+`BAD EEPROM`, `NOT A CAMERA`, `ERR …`), which is the first thing to ask users
+for. SC101IOT behaviour is not verified on hardware in this repository.
+
+### Settings
+
+`film_settings.h` is the persisted struct (NVS `film/settings`). It only ever
+grows at the end; `film_settings_read` tries the current size and then the
+historical sizes (8 and 10 bytes) so upgrades keep roll and frame counters.
+Reachable from the camera picker (pull down from the top edge → SETTINGS):
+skip boot animation, sound, vibration, film viewfinder, screen-off time
+(30 s / 1 / 2 / 5 min; dimming at half) and an About card. `main.c` reads the
+settings before the boot animation to apply mute/vibration and to skip the
+animation; `film_feedback_set_mode` applies them at runtime.
+
 ## Module map
 
 ### Device application

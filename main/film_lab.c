@@ -110,6 +110,7 @@ struct film_lab_t {
     film_filter_handle_t filter;
     film_darkroom_handle_t darkroom;
     jpeg_encoder_handle_t encoder;
+    SemaphoreHandle_t encoder_lock; /*!< 硬件编码器同一时刻只做一件事：成片编码（暗房任务）与无 JPEG 传感器的原片编码（相机任务）共用 */
 };
 
 /* ---------------------------------------------------------------- 小工具 */
@@ -368,8 +369,11 @@ static esp_err_t encode(film_lab_handle_t lab, const film_darkroom_image_t *imag
         .sub_sample = JPEG_DOWN_SAMPLING_YUV420,
         .image_quality = quality,
     };
-    return jpeg_encoder_process(lab->encoder, &config, image->pixels, (uint32_t)image->size, out, (uint32_t)capacity,
-                                ret_bytes);
+    xSemaphoreTake(lab->encoder_lock, portMAX_DELAY);
+    const esp_err_t err = jpeg_encoder_process(lab->encoder, &config, image->pixels, (uint32_t)image->size, out,
+                                               (uint32_t)capacity, ret_bytes);
+    xSemaphoreGive(lab->encoder_lock);
+    return err;
 }
 
 /** 复制一份到恰好大小的缓冲交给写盘任务（编码器的输出缓冲按最坏情况预留，偏大） */
@@ -962,6 +966,62 @@ void film_lab_cancel_reserve(film_lab_handle_t lab)
     xSemaphoreGive(lab->lock);
 }
 
+/**
+ * 没有 JPEG 的传感器（SC101IOT）：把快门帧（4:3 窗口的 UYVY，紧凑或带 stride）用硬件编码器编成 JPEG 原片。
+ * 先逐行转 RGB888 并交换 R/B（编码器的 "RGB888" 在内存里是 B、G、R），再整块编码；
+ * 宽高向下取 16 的倍数（编码器要求），多出的边缘舍去。成功时 *ret_jpeg 是 PSRAM 里恰好大小的副本。
+ * 在相机任务里调用（快门后、SHUTTER_DONE 之前），编码器用 encoder_lock 与暗房互斥。
+ */
+static esp_err_t encode_frame_jpeg(film_lab_handle_t lab, const film_viewfinder_source_t *src, uint8_t **ret_jpeg,
+                                   size_t *ret_size)
+{
+    const uint32_t width = src->width & ~15u;
+    const uint32_t height = src->height & ~15u;
+    ESP_RETURN_ON_FALSE(src->uyvy && width && height, ESP_ERR_INVALID_SIZE, TAG, "frame %ux%u", (unsigned)src->width,
+                        (unsigned)src->height);
+    const size_t stride = src->stride ? src->stride : (size_t)src->width * 2u;
+    const jpeg_encode_memory_alloc_cfg_t in_cfg = { .buffer_direction = JPEG_ENC_ALLOC_INPUT_BUFFER };
+    const jpeg_encode_memory_alloc_cfg_t out_cfg = { .buffer_direction = JPEG_ENC_ALLOC_OUTPUT_BUFFER };
+    size_t in_size = 0, capacity = 0;
+    uint8_t *rgb = jpeg_alloc_encoder_mem((size_t)width * height * 3u, &in_cfg, &in_size);
+    uint8_t *out = jpeg_alloc_encoder_mem((size_t)width * height * JPEG_OUT_BYTES_NUM / JPEG_OUT_BYTES_DEN, &out_cfg,
+                                          &capacity);
+    esp_err_t err = rgb && out ? ESP_OK : ESP_ERR_NO_MEM;
+    for (uint32_t y = 0; err == ESP_OK && y < height; ++y) {
+        uint8_t *row = rgb + (size_t)y * width * 3u;
+        film_viewfinder_row_to_rgb888(src->uyvy + (size_t)y * stride, width, row);
+        for (uint32_t x = 0; x < width; ++x, row += 3) {
+            const uint8_t r = row[0];
+            row[0] = row[2];
+            row[2] = r;
+        }
+    }
+    uint32_t bytes = 0;
+    if (err == ESP_OK) {
+        const film_darkroom_image_t image = {
+            .pixels = rgb, .size = (size_t)width * height * 3u, .width = (uint16_t)width, .height = (uint16_t)height,
+            .stride = (size_t)width * 3u, .format = FILM_IMAGE_RGB888,
+        };
+        err = encode(lab, &image, JPEG_QUALITY, out, capacity, &bytes);
+        if (err == ESP_ERR_INVALID_STATE) {
+            err = encode(lab, &image, JPEG_QUALITY_FALLBACK, out, capacity, &bytes);
+        }
+    }
+    uint8_t *copy = err == ESP_OK ? heap_caps_malloc(bytes, FILE_CAPS) : NULL;
+    if (copy) {
+        memcpy(copy, out, bytes);
+        *ret_jpeg = copy;
+        *ret_size = bytes;
+    } else if (err == ESP_OK) {
+        err = ESP_ERR_NO_MEM;
+    }
+    heap_caps_free(rgb);
+    heap_caps_free(out);
+    ESP_LOGI(TAG, "frame %ux%u -> JPEG %u KB: %s", (unsigned)width, (unsigned)height, (unsigned)(bytes / 1024),
+             esp_err_to_name(err));
+    return err;
+}
+
 /** 拍摄失败：放掉缓冲、报失败、撤销预约（取景从未被冲洗占用，不需要恢复） */
 static void fail_capture(film_lab_handle_t lab, uint32_t photo_id, esp_err_t err, void *jpeg, void *proof_px)
 {
@@ -976,8 +1036,12 @@ void film_lab_deliver_still(film_lab_handle_t lab, const film_shot_t *shot, cons
                             const film_viewfinder_source_t *proof, esp_err_t err)
 {
     uint8_t *jpeg = still->jpeg;
+    size_t jpeg_size = still->size;
     uint8_t *proof_px = proof ? (uint8_t *)proof->uyvy : NULL;
     const char *root = get_root(lab);
+    if (err == ESP_OK && !jpeg && still->from_frame && proof && proof->uyvy) {
+        err = encode_frame_jpeg(lab, proof, &jpeg, &jpeg_size);   /* 传感器没有 JPEG：用快门帧编一份原片 */
+    }
     if (err != ESP_OK || !jpeg) {
         fail_capture(lab, shot->photo_id, err != ESP_OK ? err : ESP_FAIL, jpeg, proof_px);
         return;
@@ -990,12 +1054,12 @@ void film_lab_deliver_still(film_lab_handle_t lab, const film_shot_t *shot, cons
      * 原片先落盘：带 EXIF 的一份交给写盘任务（写完再写 .PND 续冲标记），内存里只剩这一份拷贝，
      * 写完即释放；之后全尺寸冲洗从文件读回。拼 EXIF 的缓冲不够时退回零拷贝（不带 EXIF），照片不丢。
      */
-    film_blob_t *raw = film_meta_make_blob(shot, FILM_META_RAW, jpeg, still->size);
+    film_blob_t *raw = film_meta_make_blob(shot, FILM_META_RAW, jpeg, jpeg_size);
     if (raw) {
         heap_caps_free(jpeg);
     } else {
         ESP_LOGW(TAG, "RAW without EXIF (no memory for the copy)");
-        raw = film_blob_wrap(jpeg, still->size);   /* 失败时 wrap 已释放 jpeg */
+        raw = film_blob_wrap(jpeg, jpeg_size);   /* 失败时 wrap 已释放 jpeg */
     }
     esp_err_t enqueue_err = raw ? ESP_OK : ESP_ERR_NO_MEM;
     if (enqueue_err == ESP_OK) {
@@ -1069,6 +1133,8 @@ static esp_err_t lab_init_in_task(film_lab_handle_t lab)
         .full_format = FILM_IMAGE_YUV420,   /* 全分辨率 RGB888 要 9 MB 以上，PSRAM 放不下 */
     };
     ESP_RETURN_ON_ERROR(film_darkroom_create(&darkroom, &lab->darkroom), TAG, "darkroom");
+    lab->encoder_lock = xSemaphoreCreateMutex();
+    ESP_RETURN_ON_FALSE(lab->encoder_lock, ESP_ERR_NO_MEM, TAG, "encoder lock");
     const jpeg_encode_engine_cfg_t encoder = { .timeout_ms = JPEG_TIMEOUT_MS };
     return jpeg_new_encoder_engine(&encoder, &lab->encoder);
 }
@@ -1094,6 +1160,9 @@ static void lab_free(film_lab_handle_t lab)
     }
     if (lab->encoder) {
         (void)jpeg_del_encoder_engine(lab->encoder);
+    }
+    if (lab->encoder_lock) {
+        vSemaphoreDelete(lab->encoder_lock);
     }
     if (lab->darkroom) {
         film_darkroom_delete(lab->darkroom);

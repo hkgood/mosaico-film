@@ -13,6 +13,7 @@
  */
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -35,8 +36,22 @@ typedef struct {
 typedef struct {
     uint8_t *jpeg;              /*!< PSRAM 中的副本，所有者用 heap_caps_free 释放 */
     size_t size;
-    film_still_awb_t awb;       /*!< 这张所用的白平衡增益，冲洗后连同残差交回 film_still_learn_awb */
+    film_still_awb_t awb;       /*!< 这张所用的白平衡增益，冲洗后连同残差交回 film_still_learn_awb；全 0 表示没用手动白平衡 */
+    /**
+     * 传感器不出 JPEG（如 SC101IOT）：jpeg 为 NULL，快门帧就是 film_camera 交出的 proof（4:3 窗口的 UYVY），
+     * 暗房用硬件编码器把它编成 JPEG 原片。分辨率与取景相同，不如 OV3640 的 2048×1536。
+     */
+    bool from_frame;
 } film_still_t;
+
+/** 读出当前相机传感器的芯片 ID（pid）；相机的视频设备已注册、没有别的任务在用它时调用（相机任务） */
+esp_err_t film_still_sensor_pid(uint16_t *ret_pid);
+
+/** 这个传感器能不能出 2048×1536 的 JPEG（OV3640 可以，SC101IOT 只有 YUV） */
+bool film_still_sensor_has_jpeg(uint16_t pid);
+
+/** 传感器的短名字，用于日志与设置页的关于信息；认不出时返回 "UNKNOWN" */
+const char *film_still_sensor_name(uint16_t pid);
 
 /** 取一张快门帧；失败时 ret->jpeg 为 NULL */
 esp_err_t film_still_capture(film_still_t *ret);

@@ -46,6 +46,19 @@ static LUT_ATTR const uint16_t k_r565[CLAMP_LEN] = { REP832(R565) };
 static LUT_ATTR const uint16_t k_g565[CLAMP_LEN] = { REP832(G565) };
 static LUT_ATTR const uint16_t k_b565[CLAMP_LEN] = { REP832(B565) };
 
+film_viewfinder_source_t film_viewfinder_window_43(const film_viewfinder_source_t *src)
+{
+    if (!src->uyvy || src->width * 3u <= src->height * 4u) {
+        return *src;
+    }
+    const size_t stride = src->stride ? src->stride : (size_t)src->width * 2u;
+    const uint32_t width = (src->height * 4u / 3u) & ~1u;
+    const uint32_t x0 = ((src->width - width) / 2u) & ~1u;
+    return (film_viewfinder_source_t){
+        .uyvy = src->uyvy + (size_t)x0 * 2u, .width = width, .height = src->height, .stride = stride,
+    };
+}
+
 void film_viewfinder_size(bool instant, bool crop_43, uint16_t *ret_w, uint16_t *ret_h)
 {
     if (instant) {

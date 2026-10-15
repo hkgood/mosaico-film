@@ -14,6 +14,7 @@
 #include "esp_gsp.h"
 #include "film_feedback.h"
 #include "film_port.h"
+#include "film_settings.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -29,6 +30,12 @@ typedef struct {
 /** 启动相机、暗房、存储、分享与传感器（相机缺失或存储失败不算错误，界面会提示） */
 esp_err_t film_port_dev_create(const film_port_dev_config_t *config, film_port_dev_handle_t *ret_handle);
 const film_port_t *film_port_dev_table(film_port_dev_handle_t handle);
+
+/**
+ * 读取已保存的用户设置（不需要句柄，开机动画之前就能调用）：没有数据或内容不合法时返回 false，out 为出厂默认。
+ * 用来决定要不要播开机动画、开机时有没有声音与振动。
+ */
+bool film_port_dev_read_settings(film_settings_t *out);
 
 #ifdef __cplusplus
 }

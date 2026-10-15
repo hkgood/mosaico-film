@@ -148,7 +148,7 @@ static const film_shell_intro_t s_intro = { .frame = intro_frame, .port = intro_
 
 /* ---------------------------------------------------------------- 入口 */
 
-static esp_err_t start_ui(film_feedback_handle_t feedback, esp_gsp_handle_t *ret_ui)
+static esp_err_t start_ui(film_feedback_handle_t feedback, bool skip_boot, esp_gsp_handle_t *ret_ui)
 {
     esp_gsp_config_t app_config;
     esp_err_t err = ui_bundle_open(&app_config);
@@ -170,8 +170,11 @@ static esp_err_t start_ui(film_feedback_handle_t feedback, esp_gsp_handle_t *ret
 
     const uint8_t *anim = NULL;
     size_t anim_size = 0;
-    if (film_assets_boot_anim(&anim, &anim_size) && film_boot_create(anim, anim_size, feedback, &s_boot) != ESP_OK) {
+    if (!skip_boot && film_assets_boot_anim(&anim, &anim_size) && film_boot_create(anim, anim_size, feedback, &s_boot) != ESP_OK) {
         s_boot = NULL;   /* 没有动画就直接停在黑屏，等服务就绪 */
+    }
+    if (!s_boot) {
+        ESP_LOGI(TAG, "boot animation %s", skip_boot ? "skipped by setting" : "unavailable");
     }
     const film_shell_config_t shell = {
         .canvas_bind = GSP_FILM_BIND_SCREEN,
@@ -216,8 +219,12 @@ void app_main(void)
     if (film_feedback_create(&fb, &feedback) != ESP_OK) {
         ESP_LOGW(TAG, "sound and vibration unavailable");
     }
+    /* 设置要在开机动画之前就生效：静音、关振动、跳过动画 */
+    film_settings_t settings;
+    film_port_dev_read_settings(&settings);
+    film_feedback_set_mode(feedback, settings.sound_off == 0, settings.haptic_off == 0);
     esp_gsp_handle_t ui = NULL;
-    if (start_ui(feedback, &ui) != ESP_OK) {
+    if (start_ui(feedback, settings.skip_boot != 0, &ui) != ESP_OK) {
         return;
     }
 

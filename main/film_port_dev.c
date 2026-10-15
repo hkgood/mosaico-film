@@ -1,11 +1,13 @@
 #include "film_port_dev.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
 #include "bsp/esp_mosaico.h"
 #include "esp_check.h"
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "film_camera.h"
@@ -195,7 +197,7 @@ static uint64_t dev_storage_free(void *ctx)
     return film_storage_free_bytes();
 }
 
-static bool dev_settings_load(void *ctx, void *data, size_t len)
+static bool settings_load_nvs(void *ctx, void *data, size_t len)
 {
     (void)ctx;
     nvs_handle_t nvs;
@@ -206,6 +208,11 @@ static bool dev_settings_load(void *ctx, void *data, size_t len)
     const esp_err_t err = nvs_get_blob(nvs, SETTINGS_KEY, data, &size);
     nvs_close(nvs);
     return err == ESP_OK && size == len;
+}
+
+bool film_port_dev_read_settings(film_settings_t *out)
+{
+    return film_settings_read(settings_load_nvs, NULL, out);
 }
 
 static void dev_settings_save(void *ctx, const void *data, size_t len)
@@ -251,6 +258,20 @@ static void dev_feedback(void *ctx, film_feedback_t kind)
 {
     film_port_dev_handle_t p = ctx;
     film_feedback_play(p->config.feedback, kind);
+}
+
+static void dev_set_feedback_mode(void *ctx, bool sound, bool haptic)
+{
+    film_port_dev_handle_t p = ctx;
+    film_feedback_set_mode(p->config.feedback, sound, haptic);
+}
+
+static void dev_read_about(void *ctx, film_about_t *ret)
+{
+    film_port_dev_handle_t p = ctx;
+    const esp_app_desc_t *app = esp_app_get_description();
+    snprintf(ret->version, sizeof(ret->version), "%s", app->version);
+    film_camera_describe(p->camera, ret->camera, sizeof(ret->camera));
 }
 
 static bool dev_read_accel(void *ctx, float *x, float *y, float *z)
@@ -409,12 +430,14 @@ esp_err_t film_port_dev_create(const film_port_dev_config_t *config, film_port_d
         .poll_event = dev_poll_event,
         .storage_root = dev_storage_root,
         .storage_free = dev_storage_free,
-        .settings_load = dev_settings_load,
+        .settings_load = settings_load_nvs,
         .settings_save = dev_settings_save,
         .share_start = dev_share_start,
         .share_stop = dev_share_stop,
         .share_status = dev_share_status,
         .feedback = dev_feedback,
+        .set_feedback_mode = dev_set_feedback_mode,
+        .about = dev_read_about,
         .read_accel = dev_read_accel,
         .wall_time = dev_wall_time,
         .read_battery = dev_read_battery,

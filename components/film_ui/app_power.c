@@ -1,5 +1,5 @@
 /*
- * 屏幕休眠：无操作 IDLE_DIM_MS 调暗并停掉取景，IDLE_OFF_MS 关屏；触摸、按键、拿起或晃动唤醒。
+ * 屏幕休眠：无操作一段时间调暗并停掉取景，再过一段时间关屏（时长由设置页的档位决定，默认 IDLE_DIM_MS / IDLE_OFF_MS）；触摸、按键、拿起或晃动唤醒。
  *
  * 状态只在界面线程里读写。休眠中第一下触摸或按键只用来唤醒：从按下到抬起（松开）
  * 整个过程都不交给页面，免得在黑屏里误按快门。外部操作（film_app_wake）不吞输入。
@@ -116,9 +116,11 @@ void app_power_step(film_app_t *app)
         app->power.active_at = app->now;
     }
     const uint32_t idle = app->now - app->power.active_at;
-    const film_display_t target = idle >= IDLE_OFF_MS ? FILM_DISPLAY_OFF
-                                : idle >= IDLE_DIM_MS ? FILM_DISPLAY_DIM
-                                                      : FILM_DISPLAY_ON;
+    uint32_t dim_ms, off_ms;
+    film_settings_screen_timeout_ms(app->settings.screen_timeout, &dim_ms, &off_ms);
+    const film_display_t target = idle >= off_ms ? FILM_DISPLAY_OFF
+                                : idle >= dim_ms ? FILM_DISPLAY_DIM
+                                                 : FILM_DISPLAY_ON;
     if (target > app->power.state) {
         set_state(app, target);   /* 只往深处走；醒来由交互触发 */
     }

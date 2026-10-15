@@ -14,6 +14,7 @@
 #define film_viewfinder_row_to_rgb888 vf_test_row_to_rgb888
 #define film_viewfinder_convert_look  vf_test_convert_look
 #define film_viewfinder_look_set      vf_test_look_set
+#define film_viewfinder_window_43     vf_test_window_43
 #include "../components/film_darkroom/film_viewfinder.c"
 
 #include <stdio.h>
@@ -105,6 +106,76 @@ static void check_frames(void)
     free(want);
 }
 
+
+/* ---------------------------------------------------------------- 4:3 窗口（16:9 传感器） */
+
+static void check_window_43(void)
+{
+    uint8_t dummy[16] = { 0 };
+    /* 4:3 与更窄的画面原样返回 */
+    const film_viewfinder_source_t vga = { .uyvy = dummy, .width = 640, .height = 480, .stride = 1280 };
+    film_viewfinder_source_t w = vf_test_window_43(&vga);
+    CHECK(w.uyvy == dummy && w.width == 640 && w.height == 480 && w.stride == 1280);
+    const film_viewfinder_source_t tall = { .uyvy = dummy, .width = 480, .height = 640, .stride = 960 };
+    w = vf_test_window_43(&tall);
+    CHECK(w.uyvy == dummy && w.width == 480);
+    const film_viewfinder_source_t none = { .uyvy = NULL, .width = 1280, .height = 720 };
+    w = vf_test_window_43(&none);
+    CHECK(w.uyvy == NULL && w.width == 1280);
+
+    /* 1280×720 → 居中的 960×720；起点偏移 160 个像素（320 字节），stride 不变；stride 为 0 时按紧凑排列补上 */
+    const film_viewfinder_source_t hd = { .uyvy = dummy, .width = 1280, .height = 720, .stride = 2560 + 64 };
+    w = vf_test_window_43(&hd);
+    CHECK(w.uyvy == dummy + 320 && w.width == 960 && w.height == 720 && w.stride == 2560 + 64);
+    const film_viewfinder_source_t hd0 = { .uyvy = dummy, .width = 1280, .height = 720, .stride = 0 };
+    w = vf_test_window_43(&hd0);
+    CHECK(w.stride == 2560 && w.width == 960);
+
+    /* 各种宽高：窗口宽度与起点都是偶数（UYVY 两像素一组），不超出画面，且居中到 3 像素以内 */
+    for (uint32_t height = 90; height <= 1080; height += 18) {
+        for (uint32_t width = height * 4 / 3 + 1; width <= height * 2; width += 14) {
+            const film_viewfinder_source_t src = { .uyvy = dummy, .width = width, .height = height, .stride = width * 2 };
+            w = vf_test_window_43(&src);
+            const uint32_t x0 = (uint32_t)(w.uyvy - dummy) / 2u;
+            CHECK(w.width % 2 == 0 && x0 % 2 == 0);
+            CHECK(x0 + w.width <= width && w.width * 3u <= height * 4u && w.width * 3u + 6u >= height * 4u);
+            const uint32_t right = width - x0 - w.width;   /* 起点取偶数向下取整：左边不比右边多，差不超过 3 个像素 */
+            CHECK(x0 <= right && right - x0 <= 3u);
+        }
+    }
+}
+
+/* 在大帧里取窗口转换，与把同一块区域紧凑复制成独立帧再转换，结果逐位一致 */
+static void check_window_convert(void)
+{
+    enum { BIG_W = 160, BIG_H = 90, WIN_W = 120 };   /* 16:9 → 4:3 窗口 120×90，起点 20 像素 */
+    uint8_t big[BIG_W * BIG_H * 2], compact[WIN_W * BIG_H * 2];
+    uint32_t seed = 0xC0FFEEu;
+    for (size_t i = 0; i < sizeof(big); ++i) {
+        seed = seed * 1664525u + 1013904223u;
+        big[i] = (uint8_t)(seed >> 24);
+    }
+    const film_viewfinder_source_t src = { .uyvy = big, .width = BIG_W, .height = BIG_H, .stride = BIG_W * 2 };
+    const film_viewfinder_source_t win = vf_test_window_43(&src);
+    CHECK(win.width == WIN_W);
+    for (int y = 0; y < BIG_H; ++y) {
+        memcpy(compact + (size_t)y * WIN_W * 2, win.uyvy + (size_t)y * win.stride, WIN_W * 2);
+    }
+    const film_viewfinder_source_t flat = { .uyvy = compact, .width = WIN_W, .height = BIG_H, .stride = 0 };
+    uint16_t *a = malloc(sizeof(uint16_t) * FILM_VF_M6_W * FILM_VF_M6_H);
+    uint16_t *b = malloc(sizeof(uint16_t) * FILM_VF_M6_W * FILM_VF_M6_H);
+    CHECK(a && b);
+    for (int mode = 0; mode < 3; ++mode) {
+        const bool instant = mode == 0, crop_43 = mode == 1;
+        uint16_t vw, vh;
+        vf_test_size(instant, crop_43, &vw, &vh);
+        CHECK(vf_test_convert(&win, instant, crop_43, a) == ESP_OK);
+        CHECK(vf_test_convert(&flat, instant, crop_43, b) == ESP_OK);
+        CHECK(memcmp(a, b, sizeof(uint16_t) * vw * vh) == 0);
+    }
+    free(a);
+    free(b);
+}
 
 /* ---------------------------------------------------------------- 胶卷取景外观 */
 
@@ -289,6 +360,8 @@ int main(void)
     CHECK(s_table);
     check_all_pixels();
     check_frames();
+    check_window_43();
+    check_window_convert();
     check_identity_look();
     check_look_frames();
     check_look_properties();

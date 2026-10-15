@@ -63,6 +63,12 @@ CONFIG_CAMERA_OV3640_DVP_YUV422_UYVY_640X480_30FPS=y
 CONFIG_CAMERA_OV3640_DVP_JPEG_2048X1536_15FPS=y
 CONFIG_CAMERA_OV3640_DVP_DEFAULT_FMT_YUV422_UYVY_640X480_30FPS=y
 
+# SC101IOT is the other camera board in the field. It is YUV-only (no JPEG)
+# and the BSP builds only its 1280x720 profiles, so a 640x480 request used to
+# fail with "format mismatch" and the app showed "camera not connected".
+# Add its 640x480 profile; the 1280x720 profiles stay as the fallback mode.
+CONFIG_CAMERA_SC101IOT_DVP_YUV422_640X480_15FPS=y
+
 # Photos: onboard NAND LittleFS shared with Vibe Mode. The on-disk limits must
 # match Vibe Mode's or the volume will not mount.
 CONFIG_NAND_FLASH_ENABLE_BDL=y

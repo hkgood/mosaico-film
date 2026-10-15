@@ -159,6 +159,12 @@ typedef enum {
     FILM_FEEDBACK_ERROR,
 } film_feedback_t;
 
+/** 设置页"关于"里显示的设备信息（平台填写，都是以 '\0' 结尾的短字符串） */
+typedef struct {
+    char version[32];       /*!< 固件版本 */
+    char camera[48];        /*!< 相机型号与分辨率；没连上时写明原因（没有模块 / 标识读不出 / 错误码） */
+} film_about_t;
+
 /** 电池状态 */
 typedef struct {
     uint8_t percent;    /*!< 剩余电量 0..100 */
@@ -212,6 +218,10 @@ typedef struct {
     void (*share_status)(void *ctx, film_share_status_t *ret_status);
 
     void (*feedback)(void *ctx, film_feedback_t kind);
+    /** 声音与振动各自的开关（设置页）；创建界面时与每次切换后调用。可为 NULL */
+    void (*set_feedback_mode)(void *ctx, bool sound, bool haptic);
+    /** 填写"关于"页的设备信息，必须立即返回。可为 NULL（页面只显示界面自己知道的内容） */
+    void (*about)(void *ctx, film_about_t *ret_about);
 
     /** 重力方向（单位 g，已换算到屏幕坐标：x 向右、y 向下、z 朝外），不可用返回 false */
     bool (*read_accel)(void *ctx, float *x, float *y, float *z);

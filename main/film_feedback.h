@@ -6,6 +6,7 @@
  */
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -33,6 +34,12 @@ void film_feedback_play(film_feedback_handle_t handle, film_feedback_t kind);
  * 任意任务可调用；命令排在已投递的声音之后执行。队列满到等不及时返回 ESP_ERR_TIMEOUT。
  */
 esp_err_t film_feedback_set_suspended(film_feedback_handle_t handle, bool suspended);
+
+/**
+ * 设置页的声音/振动开关；任意任务可调用，立即生效（已在响的声音放完为止）。
+ * 默认两者都开。关掉声音只是不出声，喇叭与混音照常待命，重新打开无需初始化。
+ */
+void film_feedback_set_mode(film_feedback_handle_t handle, bool sound, bool haptic);
 
 #ifdef __cplusplus
 }

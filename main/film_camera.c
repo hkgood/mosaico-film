@@ -1,6 +1,7 @@
 #include "film_camera.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_check.h"
@@ -20,6 +21,7 @@
 static const char *TAG = "film_camera";
 
 #define CAMERA_TASK_STACK        6144
+#define FILM_CAMERA_STATUS_LEN   48
 #define SENSOR_WIDTH             640
 #define SENSOR_HEIGHT            480
 #define FRAME_TIMEOUT_MS         1000
@@ -41,6 +43,13 @@ static const char *TAG = "film_camera";
 #define BUFFER_CAPS              (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 #define BUFFER_ALIGN             64
 
+/* 取景分辨率的尝试顺序：先 640×480（取景最省 CPU；OV3640 与 SC101IOT 的 Kconfig 都开了这一档），
+ * 不支持再用传感器默认分辨率（0×0），比如只编进 SC101IOT 1280×720 的固件。 */
+static const struct {
+    uint32_t width;
+    uint32_t height;
+} k_modes[] = { { SENSOR_WIDTH, SENSOR_HEIGHT }, { 0, 0 } };
+
 typedef struct {
     film_frame_t frame;
     uint16_t *pixels;
@@ -55,6 +64,7 @@ struct film_camera_t {
     film_preview_config_t preview;
     bool preview_wanted;        /*!< 界面设置过取景参数（开机动画结束后才会） */
     bool ready;
+    char status[FILM_CAMERA_STATUS_LEN];   /*!< film_camera_describe 的内容，相机任务在连接成败时更新 */
     bool hold;
     bool paused;                /*!< 界面暂时不要新帧：取帧后直接归还，不转换 */
     bool capture_pending;
@@ -69,6 +79,7 @@ struct film_camera_t {
 
     /* 以下只在相机任务里使用 */
     mosaico_camera_handle_t camera;
+    bool jpeg_still;            /*!< 传感器能出 JPEG：拍照走 film_still；否则用取景同款的 UYVY 帧 */
     bool streaming;
     int64_t paused_since;       /*!< 界面开始暂停取景的时刻，0 表示没暂停 */
     uint32_t stat_frames;
@@ -248,25 +259,124 @@ static void stream_stop(film_camera_handle_t cam)
     }
 }
 
-static esp_err_t camera_attach(film_camera_handle_t cam)
+static void set_status(film_camera_handle_t cam, const char *text)
+{
+    xSemaphoreTake(cam->lock, portMAX_DELAY);
+    snprintf(cam->status, sizeof(cam->status), "%s", text);
+    xSemaphoreGive(cam->lock);
+}
+
+void film_camera_describe(film_camera_handle_t cam, char *buf, size_t size)
+{
+    if (!buf || !size) {
+        return;
+    }
+    if (!cam) {
+        snprintf(buf, size, "UNAVAILABLE");
+        return;
+    }
+    xSemaphoreTake(cam->lock, portMAX_DELAY);
+    snprintf(buf, size, "%s", cam->status[0] ? cam->status : "STARTING");
+    xSemaphoreGive(cam->lock);
+}
+
+/**
+ * 相机没连上时判断原因，写进日志和状态（"相机未连接"的用户反馈靠它定位）：
+ *   模块没响应 EEPROM / EEPROM 读到了但描述符无效 / 描述符有效但不是相机板 / 其余（格式、传感器、取流）。
+ * 重试期间原因没变时不重复刷日志。
+ */
+static void diagnose_failure(film_camera_handle_t cam, esp_err_t err)
+{
+    mosaico_module_mgr_info_t info = { 0 };
+    const char *reason;
+    char text[FILM_CAMERA_STATUS_LEN];
+    if (mosaico_module_mgr_get_info(MOSAICO_MODULE_MGR_SLOT_LEFT, &info) != ESP_OK) {
+        reason = "module manager unavailable";
+        snprintf(text, sizeof(text), "ERR %s", esp_err_to_name(err));
+    } else if (info.presence != MOSAICO_MODULE_PRESENCE_PRESENT) {
+        reason = "no module acknowledged on the left slot";
+        snprintf(text, sizeof(text), "NO MODULE");
+    } else if (info.descriptor_state == MOSAICO_MODULE_DESCRIPTOR_INVALID) {
+        reason = "module present but its EEPROM descriptor is invalid";
+        snprintf(text, sizeof(text), "BAD EEPROM");
+    } else if (info.descriptor_state == MOSAICO_MODULE_DESCRIPTOR_VALID &&
+               info.eeprom.board_type != (uint8_t)MOSAICO_BOARD_TYPE_CAMERA) {
+        reason = "module present but not a camera board";
+        snprintf(text, sizeof(text), "NOT A CAMERA");
+    } else {
+        reason = "camera board found but the sensor did not start";
+        snprintf(text, sizeof(text), "ERR %s", esp_err_to_name(err));
+    }
+    char previous[FILM_CAMERA_STATUS_LEN];
+    film_camera_describe(cam, previous, sizeof(previous));
+    if (strcmp(previous, text) != 0) {
+        ESP_LOGW(TAG, "camera unavailable: %s (%s; presence %d, descriptor %d, module error %s)", reason,
+                 esp_err_to_name(err), (int)info.presence, (int)info.descriptor_state,
+                 esp_err_to_name(info.last_error));
+    }
+    set_status(cam, text);
+}
+
+/** 以指定分辨率注册并开流一次；任何一步失败都会撤销，返回失败原因 */
+static esp_err_t attach_once(film_camera_handle_t cam, uint32_t width, uint32_t height, bool allow_unidentified)
 {
     mosaico_camera_config_t config = MOSAICO_CAMERA_DEFAULT_CONFIG();
-    config.width = SENSOR_WIDTH;
-    config.height = SENSOR_HEIGHT;
+    config.width = width;
+    config.height = height;
     config.frame_timeout_ms = FRAME_TIMEOUT_MS;
+    config.allow_unidentified = allow_unidentified;
     ESP_RETURN_ON_ERROR(mosaico_camera_new(&config, &cam->camera), TAG, "camera new");
+    /* 视频设备已注册、还没开流：此时读传感器型号，决定拍照走 JPEG 还是 YUV 帧 */
+    uint16_t pid = 0;
+    if (film_still_sensor_pid(&pid) != ESP_OK) {
+        pid = 0;
+    }
     const esp_err_t err = stream_start(cam);
     if (err != ESP_OK) {
         (void)mosaico_camera_del(cam->camera);
         cam->camera = NULL;
         return err;
     }
+    cam->jpeg_still = film_still_sensor_has_jpeg(pid);
     mosaico_camera_info_t info = { 0 };
     (void)mosaico_camera_get_info(cam->camera, &info);
-    ESP_LOGI(TAG, "camera ready: %lux%lu @%lu fps", (unsigned long)info.width, (unsigned long)info.height,
-             (unsigned long)info.frame_rate);
-    set_ready(cam, true);
+    ESP_LOGI(TAG, "camera ready: %s (pid 0x%04x) %lux%lu @%lu fps, still via %s%s", film_still_sensor_name(pid), pid,
+             (unsigned long)info.width, (unsigned long)info.height, (unsigned long)info.frame_rate,
+             cam->jpeg_still ? "JPEG" : "viewfinder frame", allow_unidentified ? ", unidentified board" : "");
+    char text[FILM_CAMERA_STATUS_LEN];
+    snprintf(text, sizeof(text), "%s %lux%lu%s", film_still_sensor_name(pid), (unsigned long)info.width,
+             (unsigned long)info.height, allow_unidentified ? " (NO ID)" : "");
+    set_status(cam, text);
     return ESP_OK;
+}
+
+/**
+ * 连接相机，兼容两种传感器与两种常见状况：
+ *   - 模块 EEPROM 描述符无效（没烧录或读坏）：识别到有模块在位时放开 allow_unidentified，
+ *     是否真是相机由后面的传感器 ID 把关（认不出会失败，不会误开别的板子）；
+ *   - 传感器不支持 640×480：退到它的默认分辨率。
+ */
+static esp_err_t camera_attach(film_camera_handle_t cam)
+{
+    mosaico_module_mgr_info_t slot = { 0 };
+    const bool bad_descriptor = mosaico_module_mgr_get_info(MOSAICO_MODULE_MGR_SLOT_LEFT, &slot) == ESP_OK &&
+                                slot.presence == MOSAICO_MODULE_PRESENCE_PRESENT &&
+                                slot.descriptor_state == MOSAICO_MODULE_DESCRIPTOR_INVALID;
+    esp_err_t err = ESP_FAIL;
+    for (size_t i = 0; i < sizeof(k_modes) / sizeof(k_modes[0]); ++i) {
+        err = attach_once(cam, k_modes[i].width, k_modes[i].height, bad_descriptor);
+        if (err == ESP_OK) {
+            set_ready(cam, true);
+            return ESP_OK;
+        }
+        if (err != ESP_ERR_NOT_SUPPORTED) {
+            break;   /* 只有"格式不支持"值得换分辨率重试；找不到模块、取流失败换分辨率也没用 */
+        }
+        ESP_LOGW(TAG, "%ux%u not supported, trying the next mode", (unsigned)k_modes[i].width,
+                 (unsigned)k_modes[i].height);
+    }
+    diagnose_failure(cam, err);
+    return err;
 }
 
 static void camera_detach(film_camera_handle_t cam)
@@ -275,6 +385,7 @@ static void camera_detach(film_camera_handle_t cam)
     stream_stop(cam);
     (void)mosaico_camera_del(cam->camera);
     cam->camera = NULL;
+    set_status(cam, "DISCONNECTED");
     ESP_LOGW(TAG, "camera lost");
 }
 
@@ -370,9 +481,10 @@ static esp_err_t preview_step(film_camera_handle_t cam, const film_preview_confi
 #endif
     if (slot >= 0) {
         const int64_t t0 = esp_timer_get_time();
-        const film_viewfinder_source_t src = {
+        const film_viewfinder_source_t full = {
             .uyvy = frame.data, .width = frame.width, .height = frame.height, .stride = frame.bytes_per_line,
         };
+        const film_viewfinder_source_t src = film_viewfinder_window_43(&full);   /* 16:9 传感器取中间 4:3 */
         const esp_err_t err = film_viewfinder_convert_look(&src, pv->instant, pv->crop_43, preview_look(cam, pv),
                                                                   cam->slots[slot].pixels);
         if (err == ESP_OK) {
@@ -405,12 +517,20 @@ static film_viewfinder_source_t grab_proof(film_camera_handle_t cam)
         return proof;
     }
     const size_t stride = frame.bytes_per_line ? frame.bytes_per_line : frame.width * 2u;
-    const size_t bytes = stride * frame.height;
-    uint8_t *copy = bytes <= frame.size ? heap_caps_malloc(bytes, BUFFER_CAPS) : NULL;
+    const film_viewfinder_source_t full = {
+        .uyvy = frame.data, .width = frame.width, .height = frame.height, .stride = stride,
+    };
+    /* 与取景同一个 4:3 窗口，按窗口紧凑复制：小样（和无 JPEG 传感器的原片）都以它为准 */
+    const film_viewfinder_source_t window = film_viewfinder_window_43(&full);
+    const size_t row_bytes = (size_t)window.width * 2u;
+    const size_t bytes = row_bytes * window.height;
+    uint8_t *copy = stride * frame.height <= frame.size ? heap_caps_malloc(bytes, BUFFER_CAPS) : NULL;
     if (copy) {
-        memcpy(copy, frame.data, bytes);
+        for (uint32_t y = 0; y < window.height; ++y) {
+            memcpy(copy + (size_t)y * row_bytes, window.uyvy + (size_t)y * stride, row_bytes);
+        }
         proof = (film_viewfinder_source_t){
-            .uyvy = copy, .width = frame.width, .height = frame.height, .stride = stride,
+            .uyvy = copy, .width = window.width, .height = window.height, .stride = row_bytes,
         };
     }
     (void)mosaico_camera_return_frame(cam->camera, &frame);
@@ -425,7 +545,14 @@ static void capture(film_camera_handle_t cam, const film_shot_t *shot)
     /* 取景流在暂停期间一直关着（驱动帧缓冲让给暗房），由主循环在恢复时重开 */
     stream_stop(cam);
     film_perf_mark(FILM_PERF_STREAM_STOPPED);
-    esp_err_t err = film_still_capture(&still);
+    esp_err_t err;
+    if (cam->jpeg_still) {
+        err = film_still_capture(&still);
+    } else {
+        /* 没有 JPEG 的传感器：快门帧就是刚复制的取景帧，暗房把它编成原片（film_still_t.from_frame） */
+        still = (film_still_t){ .from_frame = true };
+        err = proof.uyvy ? ESP_OK : ESP_ERR_NO_MEM;
+    }
     xSemaphoreTake(cam->lock, portMAX_DELAY);
     cam->capturing = false;
     xSemaphoreGive(cam->lock);

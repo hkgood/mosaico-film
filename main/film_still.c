@@ -118,6 +118,44 @@ static esp_err_t v4l2(int fd, unsigned long request, void *arg, const char *what
     return ESP_OK;
 }
 
+/* ---------------------------------------------------------------- 传感器型号 */
+
+#define SENSOR_PID_OV3640_A     0x364C
+#define SENSOR_PID_OV3640_B     0x3641
+#define SENSOR_PID_SC101IOT     0xDA4A
+
+bool film_still_sensor_has_jpeg(uint16_t pid)
+{
+    return pid == SENSOR_PID_OV3640_A || pid == SENSOR_PID_OV3640_B;
+}
+
+const char *film_still_sensor_name(uint16_t pid)
+{
+    if (film_still_sensor_has_jpeg(pid)) {
+        return "OV3640";
+    }
+    return pid == SENSOR_PID_SC101IOT ? "SC101IOT" : "UNKNOWN";
+}
+
+esp_err_t film_still_sensor_pid(uint16_t *ret_pid)
+{
+    const int fd = open(ESP_VIDEO_DVP_DEVICE_NAME, O_RDWR);
+    ESP_RETURN_ON_FALSE(fd >= 0, ESP_ERR_NOT_FOUND, TAG, "open %s: errno=%d", ESP_VIDEO_DVP_DEVICE_NAME, errno);
+    esp_cam_sensor_id_t id = { 0 };
+    struct v4l2_ext_control control = {
+        .id = ESP_CAM_SENSOR_IOC_G_CHIP_ID, .size = sizeof(id), .p_u8 = (uint8_t *)&id,
+    };
+    struct v4l2_ext_controls controls = {
+        .ctrl_class = V4L2_CTRL_CLASS_ESP_CAM_IOCTL, .count = 1, .controls = &control,
+    };
+    const esp_err_t err = v4l2(fd, VIDIOC_G_EXT_CTRLS, &controls, "sensor id");
+    close(fd);
+    if (err == ESP_OK) {
+        *ret_pid = id.pid;
+    }
+    return err;
+}
+
 /* ---------------------------------------------------------------- 传感器寄存器 */
 
 static esp_err_t reg_access(int fd, uint32_t id, esp_cam_sensor_reg_val_t *reg)
@@ -426,8 +464,8 @@ static uint8_t scale_gain(uint8_t gain, float factor)
 
 void film_still_learn_awb(const film_still_awb_t *used, film_balance_t residual)
 {
-    if (!used || residual == FILM_BALANCE_NONE) {
-        return;   /* 没有残差（或小样统计无效）：保持现有增益 */
+    if (!used || used->gain[1] == 0 || residual == FILM_BALANCE_NONE) {
+        return;   /* 没有残差（或小样统计无效，或这张没用手动白平衡，如 YUV 传感器）：保持现有增益 */
     }
     float gain[3];
     film_balance_gains(residual, gain);

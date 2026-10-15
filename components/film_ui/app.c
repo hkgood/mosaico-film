@@ -26,6 +26,7 @@ static const screen_ops_t *const s_screens[SCR_COUNT] = {
     [SCR_REDEVELOP] = &g_screen_redevelop,
     [SCR_SHARE] = &g_screen_share,
     [SCR_FILM] = &g_screen_film,
+    [SCR_SETTINGS] = &g_screen_settings,
 };
 
 /* ---------------------------------------------------------------- 公共服务 */
@@ -79,6 +80,13 @@ void app_toast_error(film_app_t *app, esp_err_t err)
         break;
     }
     app_feedback(app, FILM_FEEDBACK_ERROR);
+}
+
+void app_apply_feedback_mode(film_app_t *app)
+{
+    if (app->port->set_feedback_mode) {
+        app->port->set_feedback_mode(app->port->ctx, app->settings.sound_off == 0, app->settings.haptic_off == 0);
+    }
 }
 
 void app_feedback(film_app_t *app, film_feedback_t kind)
@@ -485,24 +493,15 @@ static void handle_event(film_app_t *app, const film_event_t *ev)
 
 /* ---------------------------------------------------------------- 生命周期 */
 
+static bool load_settings_blob(void *ctx, void *data, size_t len)
+{
+    film_app_t *app = ctx;
+    return app->port->settings_load && app->port->settings_load(app->port->ctx, data, len);
+}
+
 static void load_settings(film_app_t *app)
 {
-    film_settings_t s = { 0 };
-    const bool loaded = app->port->settings_load &&
-                        (app->port->settings_load(app->port->ctx, &s, sizeof(s)) ||
-                         app->port->settings_load(app->port->ctx, &s, SETTINGS_LEGACY_SIZE));   /* 旧版本保存的短数据 */
-    if (loaded && s.version == SETTINGS_VERSION && s.film < FILM_ID_COUNT && s.frame <= ROLL_FRAMES && s.roll > 0) {
-        app->settings = s;
-        return;
-    }
-    app->settings = (film_settings_t) {
-        .version = SETTINGS_VERSION,
-        .film = FILM_ID_GOLD,
-        .instant = 0,
-        .date_stamp = 1,
-        .roll = 1,
-        .frame = 0,
-    };
+    (void)film_settings_read(load_settings_blob, app, &app->settings);   /* 读不到就是出厂默认 */
 }
 
 static void set_preview_paused(film_app_t *app, bool paused)
@@ -547,6 +546,7 @@ esp_err_t film_app_create(const film_app_config_t *config, film_app_handle_t *re
         app->thumbs[i].pixels = app->thumb_pool + i * THUMB_MAX_W * THUMB_MAX_H;
     }
     load_settings(app);
+    app_apply_feedback_mode(app);
     const char *root = app->port->storage_root ? app->port->storage_root(app->port->ctx) : NULL;
     if (root) {
         const film_library_config_t cfg = { .root = root };

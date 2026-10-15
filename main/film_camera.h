@@ -1,11 +1,13 @@
 /*
  * film_camera：相机服务（取景 + 拍照），独占 OV3640。
  *
- * 取景：UYVY 640×480 → CPU 裁切、转向、转 RGB565（film_viewfinder，不加胶卷效果），三缓冲交给界面。
+ * 取景：UYVY（OV3640 与 SC101IOT 都先要 640×480，要不到就用传感器默认分辨率，16:9 取中间 4:3 窗口）
+ *       → CPU 裁切、转向、转 RGB565（film_viewfinder，不加胶卷效果），三缓冲交给界面。
  *       胶卷效果只在冲洗成片时生效；取景不占 PPA / 2D-DMA，避免与显示刷新争用。
  * 拍照：先复制一帧取景原始数据（UYVY，用来马上出小样）→ 停取景 → 传感器切到 JPEG 2048×1536
  *       （带曝光与白平衡调校）→ 取第一张曝光正确的帧 → 把 JPEG 原片和取景帧交给 on_still 回调
  *       （所有权随之转移）；取景流保持关闭直到解除暂停。
+ *       传感器不出 JPEG（SC101IOT）时没有切换格式这一步：快门帧就是取景同款的 UYVY 帧，见 film_still_t.from_frame。
  *
  * 线程：相机任务固定在 config.core 上，所有相机操作只在该任务里发生。
  * 公共接口可在任意任务调用（内部用互斥量保护取景缓冲状态与请求）。
@@ -48,6 +50,12 @@ esp_err_t film_camera_start(const film_camera_config_t *config, film_camera_hand
 
 /** 相机是否已就绪并在出取景帧 */
 bool film_camera_ready(film_camera_handle_t cam);
+/**
+ * 一句话说明相机现状，给设置页的"关于"和排查"相机未连接"用：
+ * 就绪时是 "OV3640 640x480"；没就绪时是原因（"NO MODULE"、"BAD EEPROM"、"NOT A CAMERA"、"ERR ..."）。
+ * 任意任务可调用；cam 为 NULL 时写 "UNAVAILABLE"。
+ */
+void film_camera_describe(film_camera_handle_t cam, char *buf, size_t size);
 /** 更换胶卷、曝光或机身 */
 void film_camera_set_preview(film_camera_handle_t cam, const film_preview_config_t *config);
 /**

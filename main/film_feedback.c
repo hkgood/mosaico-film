@@ -1,6 +1,7 @@
 #include "film_feedback.h"
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdlib.h>
 
@@ -73,6 +74,8 @@ struct film_feedback_t {
     uint8_t volume;
     QueueHandle_t requests;
     bool motor_ready;
+    atomic_bool sound_on;   /*!< 设置页开关：任意任务写，混音任务读 */
+    atomic_bool haptic_on;
     clip_t clips[SOUND_COUNT];
     voice_t voices[VOICES];
     int16_t chunk[CHUNK_SAMPLES];
@@ -221,7 +224,7 @@ static void start(film_feedback_handle_t h, film_feedback_t kind)
     if ((int)kind < 0 || kind >= SOUND_COUNT) {
         return;
     }
-    if (h->speaker_open && h->clips[kind].samples) {
+    if (h->speaker_open && atomic_load(&h->sound_on) && h->clips[kind].samples) {
         voice_t *slot = &h->voices[0];
         for (int i = 0; i < VOICES; ++i) {
             if (!h->voices[i].clip) {
@@ -235,7 +238,7 @@ static void start(film_feedback_handle_t h, film_feedback_t kind)
         }
         *slot = (voice_t){ &h->clips[kind], 0 };
     }
-    if (h->motor_ready) {
+    if (h->motor_ready && atomic_load(&h->haptic_on)) {
         h->haptic = &k_patterns[kind];
         h->haptic_step = 0;
         h->haptic_left_us = (int32_t)h->haptic->steps[0].ms * 1000;
@@ -383,6 +386,8 @@ esp_err_t film_feedback_create(const film_feedback_config_t *config, film_feedba
     ESP_RETURN_ON_FALSE(config && ret_handle, ESP_ERR_INVALID_ARG, TAG, "bad args");
     film_feedback_handle_t h = calloc(1, sizeof(*h));
     ESP_RETURN_ON_FALSE(h, ESP_ERR_NO_MEM, TAG, "feedback");
+    atomic_init(&h->sound_on, true);    /* 默认都开；设置页的选择在界面启动后、读完 NVS 就下发 */
+    atomic_init(&h->haptic_on, true);
     for (int kind = 0; kind < SOUND_COUNT; ++kind) {
         clip_t *c = &h->clips[kind];
         c->count = (uint32_t)(clip_seconds((film_feedback_t)kind) * SAMPLE_RATE);
@@ -421,6 +426,14 @@ void film_feedback_play(film_feedback_handle_t handle, film_feedback_t kind)
     if (handle && (int)kind >= 0 && kind < SOUND_COUNT) {
         const uint8_t req = (uint8_t)kind;
         (void)xQueueSend(handle->requests, &req, 0);
+    }
+}
+
+void film_feedback_set_mode(film_feedback_handle_t handle, bool sound, bool haptic)
+{
+    if (handle) {
+        atomic_store(&handle->sound_on, sound);
+        atomic_store(&handle->haptic_on, haptic);
     }
 }
 

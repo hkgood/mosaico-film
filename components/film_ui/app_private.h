@@ -14,6 +14,7 @@
 #include "film_gfx.h"
 #include "film_library.h"
 #include "film_port.h"
+#include "film_settings.h"
 
 #define SCREEN_W FILM_APP_SCREEN_W
 #define SCREEN_H FILM_APP_SCREEN_H
@@ -90,8 +91,8 @@
 #define SCROLL_MIN_VELOCITY  20.0f   /*!< 惯性速度低于它（像素/秒）就停住 */
 
 /* ---------------------------------------------------------------- 屏幕休眠 */
-#define IDLE_DIM_MS              15000   /*!< 无操作多久调暗屏幕并停掉取景 */
-#define IDLE_OFF_MS              30000   /*!< 无操作多久关屏 */
+#define IDLE_DIM_MS              15000   /*!< 默认档：无操作多久调暗屏幕并停掉取景（见 film_settings_screen_timeout_ms） */
+#define IDLE_OFF_MS              30000   /*!< 默认档：无操作多久关屏 */
 #define WAKE_MOTION_G            0.15f   /*!< 重力方向变化超过它算拿起或晃动（滤掉桌面的轻微震动） */
 
 /* ---------------------------------------------------------------- 电量 */
@@ -108,6 +109,7 @@ typedef enum {
     SCR_REDEVELOP,
     SCR_SHARE,
     SCR_FILM,
+    SCR_SETTINGS,
     SCR_COUNT,
 } screen_id_t;
 
@@ -152,23 +154,7 @@ typedef struct {
     gfx_rect_t (*live_rect)(const film_app_t *app);
 } screen_ops_t;
 
-/* ---------------------------------------------------------------- 持久化设置 */
-#define SETTINGS_VERSION 1
-
-typedef struct {
-    uint8_t version;
-    uint8_t film;
-    uint8_t instant;
-    uint8_t date_stamp;
-    uint16_t roll;
-    uint8_t frame;          /*!< 本卷已拍张数 0..36 */
-    uint8_t crop_43;        /*!< M6 取景范围：0 全画幅（默认，旧版本此字节恒为 0）、1 4:3 裁切 */
-    uint8_t film_look;      /*!< 胶卷取景：0 关（默认）、1 取景带胶卷色调 */
-    uint8_t reserved;
-} film_settings_t;
-
-/** 加入 film_look 之前保存的设置大小：读到这个长度的旧数据时新字段取默认值 */
-#define SETTINGS_LEGACY_SIZE offsetof(film_settings_t, film_look)
+/* 持久化设置见 film_settings.h */
 
 /* ---------------------------------------------------------------- 缩略图缓存 */
 #define THUMB_MAX_W 160
@@ -303,6 +289,14 @@ typedef struct {
     bool picking_film;          /*!< 去了全屏胶卷页：回来时保留预览与选择，不重新进入 */
 } redev_state_t;
 
+/* 设置页：按下的行与返回键，"关于"信息在进入时取一次 */
+#define SETTINGS_ROWS 5
+typedef struct {
+    int8_t pressed;             /*!< 按下的行，-1 表示没有 */
+    bool back_down;
+    film_about_t about;
+} settings_page_state_t;
+
 /* 全屏胶卷页：从哪一页打开、选中即回到哪一页 */
 typedef struct {
     screen_id_t return_to;      /*!< SCR_CAMERA 或 SCR_REDEVELOP */
@@ -422,6 +416,7 @@ struct film_app_t {
     redev_state_t redev;
     share_state_t share;
     film_page_state_t film;
+    settings_page_state_t settings_page;
 };
 
 /* ---------------------------------------------------------------- 页面接口表 */
@@ -431,9 +426,12 @@ extern const screen_ops_t g_screen_detail;
 extern const screen_ops_t g_screen_redevelop;
 extern const screen_ops_t g_screen_share;
 extern const screen_ops_t g_screen_film;
+extern const screen_ops_t g_screen_settings;
 
 /* ---------------------------------------------------------------- app.c 提供的公共服务 */
 void app_go(film_app_t *app, screen_id_t screen);
+/** 把设置里的声音/振动开关告诉平台（创建界面时与每次切换后调用） */
+void app_apply_feedback_mode(film_app_t *app);
 void app_toast(film_app_t *app, const char *text);
 void app_toast_error(film_app_t *app, esp_err_t err);
 /** 重新读取存储剩余空间并刷新 shots_left（启动、存储变化、保存完成时调用） */

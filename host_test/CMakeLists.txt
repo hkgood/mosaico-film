@@ -126,6 +126,11 @@ target_link_libraries(film_library_test PRIVATE film_ui)
 target_compile_options(film_library_test PRIVATE -Wall -Wextra -Werror)
 add_test(NAME film_library_test COMMAND film_library_test)
 
+add_executable(film_settings_test test_film_settings.c)
+target_link_libraries(film_settings_test PRIVATE film_ui)
+target_compile_options(film_settings_test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME film_settings_test COMMAND film_settings_test)
+
 add_executable(film_pending_test test_film_pending.c)
 target_link_libraries(film_pending_test PRIVATE film_ui)
 target_compile_options(film_pending_test PRIVATE -Wall -Wextra -Werror)
