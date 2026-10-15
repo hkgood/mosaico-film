@@ -56,6 +56,9 @@ void app_refresh_shots_left(film_app_t *app)
         return;
     }
     const uint64_t free_bytes = app->port->storage_free(app->port->ctx);
+    if (free_bytes == 0) {
+        return;   /* 平台不知道剩余空间（现查太慢）：不提示张数，也不拦快门，写满由写盘的 ENOSPC 报告 */
+    }
     const uint64_t shots = free_bytes / FILM_SHOT_BYTES_ESTIMATE;
     app->shots_left = shots > 9999 ? 9999 : (int)shots;
 }

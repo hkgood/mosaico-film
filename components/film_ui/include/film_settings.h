@@ -27,14 +27,14 @@ typedef struct {
     uint8_t date_stamp;
     uint16_t roll;
     uint8_t frame;          /*!< 本卷已拍张数 0..36 */
-    uint8_t crop_43;        /*!< M6 取景范围：0 全画幅（默认，旧版本此字节恒为 0）、1 4:3 裁切 */
+    uint8_t crop_43;        /*!< M6 取景范围：1 4:3 横幅裁切（默认，与 1.0.0 一致）、0 全画幅（3:4 竖幅） */
     /* ---- 以下是后加的字段，旧数据里不存在，读到时为 0 ---- */
     uint8_t film_look;      /*!< 胶卷取景：0 关（默认）、1 取景带胶卷色调 */
     uint8_t skip_boot;      /*!< 跳过开机动画：0 播放（默认）、1 跳过 */
     uint8_t sound_off;      /*!< 关闭声音（快门、拨盘、开机）：0 开（默认）、1 关 */
     uint8_t haptic_off;     /*!< 关闭振动：0 开（默认）、1 关 */
     uint8_t screen_timeout; /*!< 关屏时长档位 0..FILM_SCREEN_TIMEOUT_LEVELS-1，0 为默认 30 秒 */
-    uint8_t reserved;
+    uint8_t framing_ver;    /*!< 取景范围字段的含义版本：0 = 旧数据（crop_43 为 0 只是"没设过"），1 = 用户可选 */
 } film_settings_t;
 
 /** 取出已保存数据的函数（与 film_port_t.settings_load 同形）：长度与保存时不一致返回 false */

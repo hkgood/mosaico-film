@@ -11,7 +11,6 @@
 #include "esp_timer.h"
 #include "film_perf.h"
 #include "film_port.h"
-#include "film_storage.h"
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -174,7 +173,6 @@ static void finish_photo(film_writer_handle_t w, const item_t *item)
         remove(path);
     }
     if (item->err == ESP_OK) {
-        film_storage_refresh_free();   /* 在写盘任务里更新，界面收到 SAVED 后读缓存即可 */
         const film_event_t ev = err == ESP_OK
                                     ? (film_event_t){ .type = FILM_EVT_SAVED, .photo_id = item->meta.id,
                                                       .meta = item->meta }

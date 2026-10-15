@@ -23,6 +23,8 @@ void film_settings_defaults(film_settings_t *out)
         .date_stamp = 1,
         .roll = 1,
         .frame = 0,
+        .crop_43 = 1,       /* 默认 4:3 横幅取景；全画幅（竖幅）要在机身选择里点 M6 切换 */
+        .framing_ver = 1,
     };
 }
 
@@ -45,6 +47,11 @@ bool film_settings_read(film_settings_load_fn load, void *ctx, film_settings_t *
         /* 档位越界（数据损坏或未来版本）按默认处理，其余开关按非零即开 */
         if (s.screen_timeout >= FILM_SCREEN_TIMEOUT_LEVELS) {
             s.screen_timeout = 0;
+        }
+        /* 旧数据里 crop_43 恒为 0（那时没有这个选项，取景一直是 4:3）：升级时迁移成 4:3，之后按用户的选择保存 */
+        if (s.framing_ver == 0) {
+            s.crop_43 = 1;
+            s.framing_ver = 1;
         }
         *out = s;
         return true;

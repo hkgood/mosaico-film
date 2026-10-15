@@ -38,7 +38,7 @@ static const char *TAG = "film_lab";
 #define JPEG_TIMEOUT_MS         2000
 #define JPEG_OUT_BYTES_NUM      2       /*!< 输出缓冲按每像素 0.4 字节预留（q92 实际约 0.3）；超出时降质量重编 */
 #define JPEG_OUT_BYTES_DEN      5
-#define WARM_UP_IDLE_MS         6000    /*!< 开机后空闲这么久再预热存储（避开开机动画） */
+#define WARM_UP_IDLE_MS         4000    /*!< 开机后空闲这么久再预热存储（避开开机动画） */
 #define PROOF_STRIP_ROWS        16      /*!< 小样来源每次换算的取景行数 */
 #define PROGRESS_STEP           20      /*!< 进度至少涨 2% 才发一次事件 */
 #define PROGRESS_MIN_GAP_US     (150 * 1000)

@@ -163,6 +163,7 @@ typedef enum {
 typedef struct {
     char version[32];       /*!< 固件版本 */
     char camera[48];        /*!< 相机型号与分辨率；没连上时写明原因（没有模块 / 标识读不出 / 错误码） */
+    uint64_t storage_total; /*!< 存储总容量（字节），0 表示未知；剩余空间查不起（要遍历整个卷），不显示 */
 } film_about_t;
 
 /** 电池状态 */

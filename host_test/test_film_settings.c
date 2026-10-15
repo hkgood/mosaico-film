@@ -136,6 +136,29 @@ static void test_corrupt(void)
     CHECK(out.roll == 4 && out.screen_timeout == 0);
 }
 
+/* 取景范围默认 4:3；旧数据（没有 framing_ver）的 crop_43=0 只是"没设过"，升级成 4:3；用户之后选的全画幅会保留 */
+static void test_framing_default_and_migration(void)
+{
+    film_settings_t d;
+    film_settings_defaults(&d);
+    CHECK(d.crop_43 == 1 && d.framing_ver == 1);
+
+    film_settings_t old = d;
+    old.crop_43 = 0;
+    old.framing_ver = 0;
+    store_t st;
+    film_settings_t out;
+    store_put(&st, &old, sizeof(old));
+    CHECK(film_settings_read(store_load, &st, &out) && out.crop_43 == 1 && out.framing_ver == 1);
+    store_put(&st, &old, 8);
+    CHECK(film_settings_read(store_load, &st, &out) && out.crop_43 == 1);
+
+    film_settings_t chosen = d;
+    chosen.crop_43 = 0;     /* 用户在机身选择里切到全画幅 */
+    store_put(&st, &chosen, sizeof(chosen));
+    CHECK(film_settings_read(store_load, &st, &out) && out.crop_43 == 0);
+}
+
 static void test_screen_timeout(void)
 {
     uint32_t dim, off;
@@ -157,6 +180,7 @@ int main(void)
     test_roundtrip();
     test_legacy_sizes();
     test_corrupt();
+    test_framing_default_and_migration();
     test_screen_timeout();
     printf("film_settings_test: ok\n");
     return 0;

@@ -203,15 +203,30 @@ release (a finger that drifts or rests a little still counts as long as it
 stays on the same row). The picker's SETTINGS row is 52 px tall with a 12 px
 hit slop.
 
-### Never touch storage from the render path
+### Never walk the whole filesystem
 
-The UI thread renders at ~16 fps; any call that takes the LittleFS lock blocks
-it for as long as the lab task holds that lock (allocator warm-up and
-`recover_pending` can hold it for tens of seconds after boot).
-`film_storage_free_bytes()` therefore returns an atomic cache that is refreshed
-at mount, after warm-up and after each saved photo (`film_storage_refresh_free`).
-Do not call `esp_littlefs_blockdev_info` or similar from `port->*` hooks that
-`draw` uses.
+`lfs_fs_size` (behind `esp_littlefs_blockdev_info`) reads every data block of
+every file, one NAND read each, while holding the LittleFS lock. It scales with
+the number of photos (~80 s at 136 photos) and used to run at mount (boot
+stalled ~30 s), in the render path (UI froze 30–47 s) and in the writer task
+(after a shot: task watchdog reset). Nothing may call it. `film_storage_free_bytes()`
+returns 0 = unknown (no "N LEFT" hint, no shutter gate; a full volume is reported
+by `ENOSPC` → `FILM_ERR_STORAGE_FULL`) and About shows `film_storage_total_bytes()`
+(block-device geometry, no filesystem access).
+
+The one unavoidable scan is LittleFS's first block allocation after mount;
+`film_storage_warm_up` pays it in the lab task 4 s after boot so the first shot
+does not. It still grows with the amount of stored data and blocks every
+filesystem call while it runs; a real fix needs a larger LittleFS block size
+(reformat), which we never do on a device holding the system-update bundle.
+
+### Viewfinder framing
+
+The sensor is mounted rotated 90° relative to the screen, so the full sensor
+frame is a 3:4 portrait picture on screen (M6 "full frame", 1536×2048 photo).
+The default is the 4:3 landscape crop (`crop_43 = 1`, 1536×1152 photo); the
+saved photo always has the same framing as the viewfinder, at full resolution.
+`framing_ver` migrates old settings (where `crop_43 == 0` just meant "unset") to 4:3.
 
 ### Versioning and perf trace
 

@@ -25,13 +25,16 @@ esp_err_t film_storage_mount(void);
 /** 照片目录，未挂载时为 NULL */
 const char *film_storage_photo_dir(void);
 /**
- * 剩余空间（字节），未挂载时为 0。读的是缓存，立刻返回、任何任务（包括界面渲染）都可以调：
- * 现查要遍历文件系统并等它的锁，开机后台整理或写盘期间曾让一帧界面卡住几十秒。
- * 缓存由 film_storage_refresh_free 在后台任务里更新（挂载后、预热后、每张照片写完后）。
+ * 剩余空间（字节）：恒为 0，表示"未知"。
+ *
+ * LittleFS 算已用空间（lfs_fs_size）要把整个卷的每一个数据块都读一遍（每块一次 NAND 读），
+ * 耗时随照片数线性增长（一百多张照片就是几十秒），而且全程占着文件系统的锁：
+ * 放在挂载里开机多等几十秒，放在界面里整个界面卡死，放在写盘任务里拍照后看门狗复位。
+ * 所以任何地方都不再查它；容量写满由写文件时的 ENOSPC 报 FILM_ERR_STORAGE_FULL。
  */
 uint64_t film_storage_free_bytes(void);
-/** 现查剩余空间并更新缓存（会等文件系统，只在后台任务里调用） */
-void film_storage_refresh_free(void);
+/** 存储总容量（字节），读块设备几何信息，不碰文件系统；未挂载时为 0。任何任务都可以调 */
+uint64_t film_storage_total_bytes(void);
 /**
  * 预热空闲块表：LittleFS 每次挂载后第一次分配块时要遍历整个卷（数秒），
  * 在后台任务里写删一个小文件，让这次遍历不落在第一张照片上。未挂载时什么也不做。

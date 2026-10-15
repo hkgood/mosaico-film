@@ -154,6 +154,10 @@ static void draw_about(film_app_t *app, gfx_canvas_t *c)
         } else {
             snprintf(storage, sizeof(storage), "%.1f GB FREE", gb);
         }
+    } else if (about->storage_total) {
+        /* 剩余空间查不起（要遍历整个卷），只显示总容量 */
+        snprintf(storage, sizeof(storage), "%.1f GB TOTAL",
+                 (double)about->storage_total / (1024.0 * 1024.0 * 1024.0));
     }
     draw_about_line(c, &r, 2, "STORAGE", storage);
 }

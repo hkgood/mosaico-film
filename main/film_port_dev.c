@@ -272,6 +272,7 @@ static void dev_read_about(void *ctx, film_about_t *ret)
     const esp_app_desc_t *app = esp_app_get_description();
     snprintf(ret->version, sizeof(ret->version), "%s", app->version);
     film_camera_describe(p->camera, ret->camera, sizeof(ret->camera));
+    ret->storage_total = film_storage_total_bytes();
 }
 
 static bool dev_read_accel(void *ctx, float *x, float *y, float *z)
