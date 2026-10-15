@@ -6,6 +6,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "film_app.h"
@@ -162,7 +163,12 @@ typedef struct {
     uint16_t roll;
     uint8_t frame;          /*!< 本卷已拍张数 0..36 */
     uint8_t crop_43;        /*!< M6 取景范围：0 全画幅（默认，旧版本此字节恒为 0）、1 4:3 裁切 */
+    uint8_t film_look;      /*!< 胶卷取景：0 关（默认）、1 取景带胶卷色调 */
+    uint8_t reserved;
 } film_settings_t;
+
+/** 加入 film_look 之前保存的设置大小：读到这个长度的旧数据时新字段取默认值 */
+#define SETTINGS_LEGACY_SIZE offsetof(film_settings_t, film_look)
 
 /* ---------------------------------------------------------------- 缩略图缓存 */
 #define THUMB_MAX_W 160

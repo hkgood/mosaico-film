@@ -16,7 +16,7 @@
 #include "cam_private.h"
 
 #define PICKER_EDGE_PX      36      /*!< 顶边多高范围内按下才算"下拉" */
-#define PICKER_SHEET_H      300     /*!< 面板高度 */
+#define PICKER_SHEET_H      344     /*!< 面板高度 */
 #define PICKER_RADIUS       22
 #define PICKER_OPEN_RATIO   0.38f   /*!< 松手时拉出超过这个比例就展开 */
 #define PICKER_FLING_PX_S   600.0f  /*!< 甩动速度阈值（像素/秒） */
@@ -35,6 +35,11 @@
 #define ART_H               112
 
 #define PICKER_VISIBLE_PULL 0.002f  /*!< 展开程度不超过它就当作完全收起，不画面板 */
+
+#define LOOK_ROW_GAP        46      /*!< "胶卷取景"开关行：卡片下沿到行顶的距离 */
+#define LOOK_ROW_H          34
+#define LOOK_SWITCH_W       40
+#define LOOK_SWITCH_H       20
 
 #define HINT_W              34      /*!< 顶边下拉提示条 */
 #define HINT_H              4
@@ -81,6 +86,12 @@ int cam_picker_covered_rows(const cam_state_t *cam)
 static gfx_rect_t card_rect(const cam_state_t *cam, int i)
 {
     return gfx_rect(CARD_X0 + i * (CARD_W + CARD_GAP), sheet_top(cam) + CARD_Y, CARD_W, CARD_H);
+}
+
+/** "胶卷取景"开关行 */
+static gfx_rect_t look_rect(const cam_state_t *cam)
+{
+    return gfx_rect(CARD_X0, sheet_top(cam) + CARD_Y + CARD_H + LOOK_ROW_GAP, 2 * CARD_W + CARD_GAP, LOOK_ROW_H);
 }
 
 /** 点中的卡片编号，没点中返回 -1 */
@@ -242,6 +253,27 @@ static void draw_card(film_app_t *app, gfx_canvas_t *c, int i)
     gfx_text(c, &sub, r.x + r.w / 2, r.y + r.h + 32, body_sub(app, i));
 }
 
+/** "胶卷取景"开关行：文字 + 右侧拨动开关 */
+static void draw_look_row(film_app_t *app, gfx_canvas_t *c)
+{
+    const bool on = app->settings.film_look != 0;
+    const gfx_rect_t r = look_rect(&app->cam);
+    gfx_fill_round(c, r, CARD_RADIUS, 0x1E1D1B, 255);
+    gfx_stroke_round(c, r, CARD_RADIUS, 1, 0x3B3A37, 255);
+    const gfx_text_style_t name =
+        ui_style(&font_jost_m14, 14, 0.08f, COLOR_CREAM, 230, GFX_ALIGN_LEFT, GFX_ROT_0);
+    gfx_text(c, &name, r.x + 16, r.y + 15, "FILM VIEWFINDER");
+    const gfx_text_style_t sub =
+        ui_style(&font_jost_m10, UI_TEXT_CAPTION, 0.16f, COLOR_MUTED, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
+    gfx_text(c, &sub, r.x + 16, r.y + 28, "TONE ONLY  \xC2\xB7  NO GRAIN OR GLOW");
+
+    const gfx_rect_t sw = gfx_rect(r.x + r.w - 16 - LOOK_SWITCH_W, r.y + (r.h - LOOK_SWITCH_H) / 2, LOOK_SWITCH_W,
+                                   LOOK_SWITCH_H);
+    gfx_fill_round(c, sw, LOOK_SWITCH_H / 2, on ? COLOR_AMBER : 0x3B3A37, on ? 230 : 255);
+    const int knob_x = on ? sw.x + sw.w - LOOK_SWITCH_H / 2 : sw.x + LOOK_SWITCH_H / 2;
+    circle(c, knob_x, sw.y + LOOK_SWITCH_H / 2, LOOK_SWITCH_H / 2 - 3, COLOR_CREAM, 255);
+}
+
 void cam_picker_render(film_app_t *app, gfx_canvas_t *c)
 {
     const cam_state_t *cam = &app->cam;
@@ -276,6 +308,7 @@ void cam_picker_render(film_app_t *app, gfx_canvas_t *c)
     for (int i = 0; i < 2; ++i) {
         draw_card(app, c, i);
     }
+    draw_look_row(app, c);
     /* 底部把手：向上推收起 */
     gfx_fill_round(c, gfx_rect((SCREEN_W - 64) / 2, top + PICKER_SHEET_H - 22, 64, 3), 2, COLOR_CREAM, 190);
     gfx_fill_round(c, gfx_rect((SCREEN_W - 42) / 2, top + PICKER_SHEET_H - 12, 42, 4), 2, COLOR_BLACK, 130);
@@ -375,6 +408,15 @@ bool cam_picker_gesture(film_app_t *app, const gesture_t *g)
         }
         break;
     case GEST_TAP: {
+        if (cam->picker_pull > 0.95f && ui_hit(look_rect(cam), g->x, g->y, 4)) {
+            /* 胶卷取景开关：面板留着，取景在面板后面实时换色调 */
+            app->settings.film_look = !app->settings.film_look;
+            app_save_settings(app);
+            app_update_preview(app);
+            cam->picker_pressed = -1;
+            app_feedback(app, FILM_FEEDBACK_LEVER);
+            break;
+        }
         const int card = card_at(cam, g->x, g->y);
         if (card >= 0 && card == cam->picker_pressed) {
             cam->picker_open = false;

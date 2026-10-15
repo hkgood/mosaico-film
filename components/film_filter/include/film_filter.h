@@ -37,6 +37,8 @@ typedef enum {
 
 typedef struct film_filter_t *film_filter_handle_t;
 
+#define FILM_LOOK_CHANNELS  3
+
 /** 创建参数：决定实例暂存缓冲区的大小，之后处理的图像不能超过这个尺寸 */
 typedef struct {
     uint16_t max_width;
@@ -124,6 +126,23 @@ esp_err_t film_filter_strip_pre(film_filter_handle_t handle, const film_image_t 
 esp_err_t film_filter_strip_resolve(film_filter_handle_t handle);
 esp_err_t film_filter_strip_finish(film_filter_handle_t handle, const film_image_t *strip, uint16_t y0);
 void film_filter_strip_end(film_filter_handle_t handle);
+
+/**
+ * 取景用的"胶卷外观"：只有色调曲线、饱和度和单色，不含颗粒、红晕、暗角、漏光和像素化。
+ * 取景转换把它折进查找表，每像素的运算量与不加外观时相同（见 film_viewfinder.h）。
+ * 与成片管线相比是近似：饱和度在曲线之前按色度缩放，暗/亮部色调按曲线输出叠加，单色按亮度取。
+ */
+typedef struct {
+    uint8_t curve[FILM_LOOK_CHANNELS][256];  /*!< 逻辑 R、G、B：输入色阶 → 输出色阶（曝光补偿与暗/亮部色调已折入）；单色时三条相同 */
+    int16_t sat_q8;                          /*!< 饱和度，Q8（256 = 1.0）；单色时无意义 */
+    bool mono;
+} film_look_t;
+
+/**
+ * 由胶卷预设和曝光补偿生成取景外观（几十微秒）。没有曲线可言的胶卷（像素风）得到恒等外观。
+ * 任何有预设的新胶卷自动获得取景外观，不需要额外登记。
+ */
+esp_err_t film_filter_look(film_id_t film, float exposure_ev, film_look_t *ret_look);
 
 /** 胶卷的稳定英文键名（如 "gold"），用于配置文件和日志；编号非法时返回 NULL */
 const char *film_filter_get_key(film_id_t film);

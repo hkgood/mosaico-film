@@ -117,6 +117,7 @@ void app_update_preview(film_app_t *app)
         .exposure_ev = app->cam.ev,
         .instant = app->settings.instant != 0,
         .crop_43 = app->settings.crop_43 != 0,
+        .film_look = app->settings.film_look != 0,
     };
     app->port->preview_config(app->port->ctx, &cfg);
 }
@@ -487,8 +488,10 @@ static void handle_event(film_app_t *app, const film_event_t *ev)
 static void load_settings(film_app_t *app)
 {
     film_settings_t s = { 0 };
-    if (app->port->settings_load && app->port->settings_load(app->port->ctx, &s, sizeof(s)) &&
-        s.version == SETTINGS_VERSION && s.film < FILM_ID_COUNT && s.frame <= ROLL_FRAMES && s.roll > 0) {
+    const bool loaded = app->port->settings_load &&
+                        (app->port->settings_load(app->port->ctx, &s, sizeof(s)) ||
+                         app->port->settings_load(app->port->ctx, &s, SETTINGS_LEGACY_SIZE));   /* 旧版本保存的短数据 */
+    if (loaded && s.version == SETTINGS_VERSION && s.film < FILM_ID_COUNT && s.frame <= ROLL_FRAMES && s.roll > 0) {
         app->settings = s;
         return;
     }

@@ -67,6 +67,7 @@ typedef struct {
     float exposure_ev;
     bool instant;
     bool crop_43;       /*!< M6 的取景范围：false 全画幅（默认）、true 4:3 裁切；instant 时忽略 */
+    bool film_look;     /*!< 取景带胶卷色调（只有曲线、饱和度、单色；不加颗粒、红晕、暗角、漏光），默认关 */
 } film_preview_config_t;
 
 /** 一次拍摄（或重新冲洗）的完整参数 */

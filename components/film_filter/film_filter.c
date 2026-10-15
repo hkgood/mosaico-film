@@ -187,6 +187,37 @@ static void build_exposure_lut(uint8_t *lut, int16_t ev_centi)
     }
 }
 
+esp_err_t film_filter_look(film_id_t film, float exposure_ev, film_look_t *ret_look)
+{
+    const film_preset_t *preset = film_preset_get(film);
+    if (!preset || !ret_look) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    float ev = exposure_ev;
+    ev = ev < FILM_EXPOSURE_EV_MIN ? FILM_EXPOSURE_EV_MIN : (ev > FILM_EXPOSURE_EV_MAX ? FILM_EXPOSURE_EV_MAX : ev);
+    uint8_t exposure[256];
+    uint8_t curve[256];
+    build_exposure_lut(exposure, (int16_t)lroundf(ev * 100.0f));
+    for (int c = 0; c < FILM_LOOK_CHANNELS; c++) {
+        if (preset->pixel) {
+            /* 像素风没有曲线：只保留曝光 */
+            memcpy(ret_look->curve[c], exposure, sizeof(exposure));
+            continue;
+        }
+        build_curve_lut(&preset->curve[preset->mono ? 0 : c], curve);
+        for (int i = 0; i < 256; i++) {
+            const int out = curve[exposure[i]];
+            /* 暗/亮部色调按输出亮度线性混合（成片里按调色后的亮度，取景用通道自己的输出近似） */
+            const float t = (float)out / 255.0f;
+            const float tint = preset->mono ? 0.0f : (1.0f - t) * preset->shadow_tint[c] + t * preset->highlight_tint[c];
+            ret_look->curve[c][i] = (uint8_t)film_clamp_i32(out + (int32_t)lroundf(tint), 0, 255);
+        }
+    }
+    ret_look->mono = preset->mono;
+    ret_look->sat_q8 = (int16_t)lroundf((preset->pixel ? 1.0f : preset->saturation) * Q8_ONE);
+    return ESP_OK;
+}
+
 static void build_tone_tables(film_filter_handle_t handle, const film_preset_t *preset, int16_t ev_centi)
 {
     int curves = preset->mono ? 1 : FILM_CHANNELS;

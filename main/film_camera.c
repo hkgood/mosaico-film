@@ -1,11 +1,13 @@
 #include "film_camera.h"
 
+#include <math.h>
 #include <string.h>
 
 #include "esp_check.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "film_filter.h"
 #include "film_perf.h"
 #include "film_still.h"
 #include "film_viewfinder.h"
@@ -72,6 +74,10 @@ struct film_camera_t {
     uint32_t stat_frames;
     int64_t stat_since;
     int64_t stat_convert_us;
+    /* 胶卷取景外观：转换表（内部 RAM，分配失败则取景保持原样）与它对应的胶卷/曝光 */
+    film_viewfinder_look_t *look;
+    int look_film;
+    int look_ev_centi;
 #ifdef CONFIG_FILM_PERF_TRACE
     /* 取景每帧分段耗时（perf vf）：采集等待、界面取走延迟、因界面没取走而丢掉的帧 */
     int64_t perf_wait_us;           /*!< mosaico_camera_get_frame 等帧的累计时间 */
@@ -326,6 +332,25 @@ static void log_stats(film_camera_handle_t cam)
  * 返回取帧本身的错误（用于判断相机是否掉线）。
  * convert 为 false 时（界面暂停取景）只取回再归还：流不断，取帧照样按帧率限速，掉线照样能发现。
  */
+/** 胶卷取景外观：开关关闭（或表没分配出来）返回 NULL；胶卷或曝光变了才重建（几十微秒） */
+static const film_viewfinder_look_t *preview_look(film_camera_handle_t cam, const film_preview_config_t *pv)
+{
+    if (!pv->film_look || !cam->look) {
+        return NULL;
+    }
+    const int ev_centi = (int)lroundf(pv->exposure_ev * 100.0f);
+    if (cam->look_film != (int)pv->film || cam->look_ev_centi != ev_centi) {
+        film_look_t look;
+        if (film_filter_look(pv->film, pv->exposure_ev, &look) != ESP_OK) {
+            return NULL;
+        }
+        film_viewfinder_look_set(cam->look, &look);
+        cam->look_film = (int)pv->film;
+        cam->look_ev_centi = ev_centi;
+    }
+    return cam->look;
+}
+
 static esp_err_t preview_step(film_camera_handle_t cam, const film_preview_config_t *pv, bool convert)
 {
     mosaico_camera_frame_t frame = { 0 };
@@ -348,7 +373,8 @@ static esp_err_t preview_step(film_camera_handle_t cam, const film_preview_confi
         const film_viewfinder_source_t src = {
             .uyvy = frame.data, .width = frame.width, .height = frame.height, .stride = frame.bytes_per_line,
         };
-        const esp_err_t err = film_viewfinder_convert(&src, pv->instant, pv->crop_43, cam->slots[slot].pixels);
+        const esp_err_t err = film_viewfinder_convert_look(&src, pv->instant, pv->crop_43, preview_look(cam, pv),
+                                                                  cam->slots[slot].pixels);
         if (err == ESP_OK) {
             uint16_t vw, vh;
             film_viewfinder_size(pv->instant, pv->crop_43, &vw, &vh);
@@ -491,6 +517,7 @@ static void camera_task(void *arg)
 
 static void free_buffers(film_camera_handle_t cam)
 {
+    heap_caps_free(cam->look);
     for (int i = 0; i < SLOT_COUNT; ++i) {
         heap_caps_free(cam->slots[i].pixels);
     }
@@ -526,6 +553,12 @@ esp_err_t film_camera_start(const film_camera_config_t *config, film_camera_hand
     cam->config = *config;
     cam->ready_slot = -1;
     cam->preview = (film_preview_config_t){ .film = FILM_ID_GOLD };
+    cam->look_film = -1;
+    /* 取景外观表每帧被读 17 万次：放内部 RAM；放不下就不提供外观 */
+    cam->look = heap_caps_calloc(1, sizeof(*cam->look), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!cam->look) {
+        ESP_LOGW(TAG, "no internal RAM for the film look table; film viewfinder disabled");
+    }
     cam->lock = xSemaphoreCreateMutex();
     cam->stopped = xSemaphoreCreateBinary();
     bool ok = cam->lock && cam->stopped;

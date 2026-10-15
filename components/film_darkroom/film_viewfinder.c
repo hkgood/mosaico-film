@@ -29,7 +29,7 @@
  * 省掉逐像素的比较分支。表在编译期生成（只读、线程安全），约 5 KB。
  */
 #define CLAMP_OFS 288
-#define CLAMP_LEN 832
+#define CLAMP_LEN FILM_VF_LUT_LEN
 
 #define REP4(f, i)   f(i), f((i) + 1), f((i) + 2), f((i) + 3)
 #define REP16(f, i)  REP4(f, i), REP4(f, (i) + 4), REP4(f, (i) + 8), REP4(f, (i) + 12)
@@ -96,11 +96,27 @@ void film_viewfinder_row_to_rgb888(const uint8_t *uyvy, uint32_t width, uint8_t 
     }
 }
 
-esp_err_t film_viewfinder_convert(const film_viewfinder_source_t *src, bool instant, bool crop_43, uint16_t *out)
+/** 转换模式：编译期常量，让分发函数为每种模式实例化一份没有分支的内层循环 */
+typedef enum {
+    VF_PLAIN,   /*!< 不带外观：乘法版 BT.601 */
+    VF_LOOK,    /*!< 彩色外观：色度项和曲线都查表 */
+    VF_MONO,    /*!< 单色外观：只读 Y，一次查表 */
+} vf_mode_t;
+
+/** 外观下的一个像素：色度项（含饱和度缩放）查表，曲线折在 565 表里 */
+static inline uint16_t look_to_565(const film_viewfinder_look_t *look, int y, int u, int v)
 {
-    if (!src || !src->uyvy || !out) {
-        return ESP_ERR_INVALID_ARG;
-    }
+    const int c = 298 * (y - 16) + 128;
+    return (uint16_t)(look->r565[((c + look->rv[v]) >> 8) + CLAMP_OFS] |
+                      look->g565[((c + look->gu[u] + look->gv[v]) >> 8) + CLAMP_OFS] |
+                      look->b565[((c + look->bu[u]) >> 8) + CLAMP_OFS]);
+}
+
+static inline __attribute__((always_inline)) esp_err_t convert_impl(const film_viewfinder_source_t *src,
+                                                                    bool instant, bool crop_43,
+                                                                    const film_viewfinder_look_t *look,
+                                                                    uint16_t *out, const vf_mode_t mode)
+{
     if (src->width < src->height || src->height < 2) {
         return ESP_ERR_INVALID_SIZE;
     }
@@ -131,10 +147,73 @@ esp_err_t film_viewfinder_convert(const film_viewfinder_source_t *src, bool inst
             uint16_t *dst = out + (size_t)y0 * vw + x;
             for (uint32_t t = 0; t < rows; ++t) {
                 const uint8_t *pair = line + pair_ofs[t];
-                *dst = yuv_to_565(line[luma_ofs[t]], pair[0], pair[2]);
+                const int luma = line[luma_ofs[t]];
+                if (mode == VF_MONO) {
+                    *dst = look->gray565[luma];
+                } else if (mode == VF_LOOK) {
+                    *dst = look_to_565(look, luma, pair[0], pair[2]);
+                } else {
+                    *dst = yuv_to_565(luma, pair[0], pair[2]);
+                }
                 dst += vw;
             }
         }
     }
     return ESP_OK;
+}
+
+esp_err_t film_viewfinder_convert_look(const film_viewfinder_source_t *src, bool instant, bool crop_43,
+                                       const film_viewfinder_look_t *look, uint16_t *out)
+{
+    if (!src || !src->uyvy || !out) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!look) {
+        return convert_impl(src, instant, crop_43, NULL, out, VF_PLAIN);
+    }
+    return look->mono ? convert_impl(src, instant, crop_43, look, out, VF_MONO)
+                      : convert_impl(src, instant, crop_43, look, out, VF_LOOK);
+}
+
+esp_err_t film_viewfinder_convert(const film_viewfinder_source_t *src, bool instant, bool crop_43, uint16_t *out)
+{
+    return film_viewfinder_convert_look(src, instant, crop_43, NULL, out);
+}
+
+void film_viewfinder_look_set(film_viewfinder_look_t *dst, const film_look_t *look)
+{
+    film_look_t identity;
+    if (!look) {
+        for (int i = 0; i < 256; ++i) {
+            identity.curve[0][i] = identity.curve[1][i] = identity.curve[2][i] = (uint8_t)i;
+        }
+        identity.sat_q8 = 256;
+        identity.mono = false;
+        look = &identity;
+    }
+    dst->mono = look->mono;
+
+    /* 色度项：先按饱和度缩放并夹到 [-128, 127]（这样 565 表的下标范围不会超出未加外观时的范围） */
+    for (int i = 0; i < 256; ++i) {
+        int d = ((i - 128) * look->sat_q8 + 128) >> 8;
+        d = d < -128 ? -128 : (d > 127 ? 127 : d);
+        dst->rv[i] = 409 * d;
+        dst->gu[i] = -100 * d;
+        dst->gv[i] = -208 * d;
+        dst->bu[i] = 516 * d;
+    }
+    /* 565 表：截断到 0..255 → 过曲线 → 截位 */
+    for (int i = 0; i < CLAMP_LEN; ++i) {
+        const int v = i < CLAMP_OFS ? 0 : (i - CLAMP_OFS > 255 ? 255 : i - CLAMP_OFS);
+        dst->r565[i] = (uint16_t)((look->curve[0][v] >> 3) << 11);
+        dst->g565[i] = (uint16_t)((look->curve[1][v] >> 2) << 5);
+        dst->b565[i] = (uint16_t)(look->curve[2][v] >> 3);
+    }
+    /* 单色：传感器 Y（有限范围）→ 0..255 → 曲线 → 灰度 565 */
+    for (int i = 0; i < 256; ++i) {
+        int lum = (298 * (i - 16) + 128) >> 8;
+        lum = lum < 0 ? 0 : (lum > 255 ? 255 : lum);
+        const int g = look->curve[0][lum];
+        dst->gray565[i] = (uint16_t)(((g >> 3) << 11) | ((g >> 2) << 5) | (g >> 3));
+    }
 }
