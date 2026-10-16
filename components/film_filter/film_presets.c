@@ -76,6 +76,16 @@ static const film_preset_t s_presets[FILM_ID_COUNT] = {
         },
         .saturation = 1.05f, .halation = 0.55f, .vignette = 0.3f, .grain = 0.06f,
     },
+    [FILM_ID_STRAY] = {
+        .key = "stray",
+        /* 陡 S 曲线：暗部压进纯黑、高光允许炸白，中间调反差很大 */
+        .curve = {
+            CURVE5(0, 0, 56, 18, 128, 132, 200, 248, 255, 255),
+            CURVE_IDENTITY,
+            CURVE_IDENTITY,
+        },
+        .saturation = 1.0f, .mono = true, .clarity = 0.85f, .vignette = 0.62f, .grain = 0.13f, .grain_size = 2.0f,
+    },
     [FILM_ID_PIXEL] = {
         .key = "pixel",
         .curve = { CURVE_IDENTITY, CURVE_IDENTITY, CURVE_IDENTITY },

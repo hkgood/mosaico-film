@@ -34,7 +34,7 @@ Pick a body inspired by a classic rangefinder or folding instant camera, turn th
 
 | | |
 | :-: | :-: |
-| **8** film stocks | **2** camera experiences |
+| **9** film stocks | **2** camera experiences |
 | **480×480** custom UI | **On-device** lab and album |
 
 </td>
@@ -62,7 +62,7 @@ Pick a body inspired by a classic rangefinder or folding instant camera, turn th
 5. **Reprocess** — keep the source frame and create another interpretation with a different film.
 6. **Send to phone** — select photos and scan a QR code to download through the same Wi-Fi network or the camera's temporary hotspot.
 
-## 🎞️ Eight film stocks
+## 🎞️ Nine film stocks
 
 | Film | Character |
 | --- | --- |
@@ -74,6 +74,7 @@ Pick a body inspired by a classic rangefinder or folding instant camera, turn th
 | **FADED 77** | Faded warmth and lifted blacks |
 | **NIGHT 800T** | Tungsten nights, cool color and red halation |
 | **PIXEL 8BIT** | Downsampling and palette quantization |
+| **STRAY 3200** | Gritty high-contrast monochrome: crushed blacks, blown highlights, coarse grain, heavy vignette and large-radius local contrast |
 
 The viewfinder uses a fast preview path; final photos use the complete development pipeline. Grain and light leaks are deterministic when the same seed is used.
 
@@ -84,7 +85,7 @@ The viewfinder uses a fast preview path; final photos use the complete developme
 - **Sound and haptics** — individual cues for shutter, dial detents, controls and shake-to-load.
 - **Orientation aware** — capture orientation is recorded and the developed photo is automatically rotated upright.
 
-> M6, SX-70, Leica and Polaroid are trademarks of their respective owners. This independent project is not affiliated with or endorsed by those companies.
+> M6, SX-70, Leica and Polaroid are trademarks of their respective owners. This independent project is not affiliated with or endorsed by those companies. Film stock names (GOLD, SOFT, VERDE, CROSS, SILVER, FADED, NIGHT, PIXEL, STRAY) are original and do not refer to any real film product.
 
 ## ⚡ Install
 

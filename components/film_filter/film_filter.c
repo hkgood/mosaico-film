@@ -395,6 +395,10 @@ static void build_context(film_filter_handle_t handle, const film_develop_params
     if (long_edge > FILM_GRAIN_REF_EDGE) {
         ctx->grain_inv_q16 = (uint32_t)(((uint64_t)FILM_GRAIN_REF_EDGE << 16) / long_edge);
     }
+    if (preset->grain_size > 1.0f) {
+        /* 粗颗粒：噪声坐标走得更慢，同一个噪声值覆盖更大的块（与分辨率无关，仍按 1440 长边折算） */
+        ctx->grain_inv_q16 = (uint32_t)((uint64_t)ctx->grain_inv_q16 * lroundf(65536.0f / preset->grain_size) >> 16);
+    }
 
     if (preset->pixel) {
         /* 像素风不走曲线表；曝光表很小，每次按需重建，不占用彩色管线的缓存键 */
@@ -409,7 +413,9 @@ static void build_context(film_filter_handle_t handle, const film_develop_params
 
     ctx->sat_q8 = (int32_t)lroundf(preset->saturation * Q8_ONE);
     ctx->mono = preset->mono;
-    ctx->halation = preset->halation > 0.0f;
+    ctx->halation = film_preset_uses_grid(preset);
+    ctx->clarity_q8 = (int32_t)lroundf(preset->clarity * Q8_ONE);
+    ctx->grid_sigma_div = ctx->clarity_q8 ? FILM_CLARITY_SIGMA_DIV : FILM_HALATION_SIGMA_DIV;
     ctx->leak = params->light_leak;
     ctx->grain = params->grain && preset->grain > 0.0f;
     ctx->grid = film_halation_grid_for(width, height);
@@ -453,14 +459,14 @@ esp_err_t film_filter_develop(film_filter_handle_t handle, const film_develop_pa
         uint32_t *done = handle->halation_next;
         handle->halation_next = handle->halation_mask;
         handle->halation_mask = done;
-        film_halation_resolve(handle, &ctx.grid, image->width, image->height);
+        film_halation_resolve(handle, &ctx.grid, image->width, image->height, ctx.grid_sigma_div);
         return ESP_OK;
     }
 
     ctx.halation_accum = handle->halation_mask;
     memset(ctx.halation_accum, 0, mask_bytes);
     run_rows(&ctx, film_color_tone_rows, 0, image->height, ctx.grid.factor);
-    film_halation_resolve(handle, &ctx.grid, image->width, image->height);
+    film_halation_resolve(handle, &ctx.grid, image->width, image->height, ctx.grid_sigma_div);
     run_rows(&ctx, film_color_finish_rows, 0, image->height, 1);
     /* 遮罩保留到下一次冲洗，供取景的快速红晕使用 */
     handle->halation_valid = true;
@@ -524,7 +530,7 @@ film_strip_pre_pass_t film_filter_strip_pre_pass(film_filter_handle_t handle)
     if (preset->pixel) {
         return FILM_STRIP_PRE_PASS_READ_ONLY;
     }
-    return preset->halation > 0.0f ? FILM_STRIP_PRE_PASS_IN_PLACE : FILM_STRIP_PRE_PASS_NONE;
+    return film_preset_uses_grid(preset) ? FILM_STRIP_PRE_PASS_IN_PLACE : FILM_STRIP_PRE_PASS_NONE;
 }
 
 esp_err_t film_filter_strip_pre(film_filter_handle_t handle, const film_image_t *strip, uint16_t y0)
@@ -559,7 +565,7 @@ esp_err_t film_filter_strip_resolve(film_filter_handle_t handle)
     if (preset->pixel) {
         film_pixel_strip_resolve(&ctx);
     } else if (ctx.halation) {
-        film_halation_resolve(handle, &ctx.grid, handle->strip.width, handle->strip.height);
+        film_halation_resolve(handle, &ctx.grid, handle->strip.width, handle->strip.height, ctx.grid_sigma_div);
     }
     return ESP_OK;
 }

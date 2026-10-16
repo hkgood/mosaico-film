@@ -80,6 +80,15 @@ static inline uint32_t halation_contribution(const int32_t t[FILM_CHANNELS])
     return (uint32_t)film_clamp_i32(hi, 0, 255);
 }
 
+/* 网格遮罩的贡献 0..255：红晕胶卷取高光遮罩；局部对比度胶卷取调色后的亮度（网格模糊后即"周围的平均亮度"） */
+static inline uint32_t grid_contribution(const film_develop_ctx_t *ctx, const int32_t t[FILM_CHANNELS])
+{
+    if (ctx->clarity_q8) {
+        return luma_q16((uint32_t)t[0], (uint32_t)t[1], (uint32_t)t[2]) >> 16;
+    }
+    return halation_contribution(t);
+}
+
 /* ---------- 收尾 ---------- */
 
 /** 收尾时每行只算一次的量 */
@@ -146,8 +155,16 @@ FILM_INLINE void finish_pixel(const film_develop_ctx_t *ctx, const finish_row_t 
 
     if (halation) {
         uint32_t glow = glow_sample(f, row, x);
-        for (int c = 0; c < channels; c++) {
-            v[c] = film_clamp_i32(v[c] + (int32_t)((glow * (uint32_t)ctx->halation_k_q16[c]) >> 8), 0, Q8_MAX);
+        if (ctx->clarity_q8) {
+            /* 局部对比度：glow 是周围平均亮度 × MASK_SCALE（16），换成 Q8 要再乘 16；离平均越远推得越开 */
+            const int32_t local_q8 = (int32_t)(glow * (Q8_ONE / FILM_HALATION_MASK_SCALE));
+            for (int c = 0; c < channels; c++) {
+                v[c] = film_clamp_i32(v[c] + (((v[c] - local_q8) * ctx->clarity_q8) >> 8), 0, Q8_MAX);
+            }
+        } else {
+            for (int c = 0; c < channels; c++) {
+                v[c] = film_clamp_i32(v[c] + (int32_t)((glow * (uint32_t)ctx->halation_k_q16[c]) >> 8), 0, Q8_MAX);
+            }
         }
     }
 
@@ -264,7 +281,7 @@ FILM_INLINE void tone_rows_impl(const film_develop_ctx_t *ctx, uint16_t y0, uint
             px[IDX_R(bgr)] = (uint8_t)t[0];
             px[1] = (uint8_t)t[1];
             px[IDX_B(bgr)] = (uint8_t)t[2];
-            mask_row[cell_x] += halation_contribution(t);
+            mask_row[cell_x] += grid_contribution(ctx, t);
             if (--cell_left == 0) {
                 cell_left = factor;
                 cell_x++;
@@ -333,7 +350,7 @@ FILM_INLINE void reuse_rows_impl(const film_develop_ctx_t *ctx, uint16_t y0, uin
         for (uint16_t x = 0; x < width; x++, px += FILM_CHANNELS) {
             int32_t v[FILM_CHANNELS];
             tone_pixel(ctx, px, v, mono, bgr);
-            mask_row[cell_x] += halation_contribution(v);
+            mask_row[cell_x] += grid_contribution(ctx, v);
             if (--cell_left == 0) {
                 cell_left = factor;
                 cell_x++;

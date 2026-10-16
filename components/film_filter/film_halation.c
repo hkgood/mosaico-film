@@ -7,7 +7,6 @@
 
 #include "film_filter_private.h"
 
-#define HALATION_SIGMA_DIV      60.0f       /*!< 模糊半径 = 图像宽 / 60 */
 #define HALATION_BLUR_PASSES    3
 #define HALATION_GRID_MAX_F     ((float)FILM_HALATION_GRID_MAX)
 
@@ -164,11 +163,12 @@ static void normalize_mask(film_filter_handle_t handle, const film_halation_grid
  * 三次均值模糊。先把每行做完三遍再换下一行（与"每遍扫完所有行"结果相同，行之间互不影响）；
  * 列方向同理。列跨步访问时同一组 16 列落在同一批缓存行里，网格只有约 100 KB，缓存命中良好。
  */
-static void blur_mask(film_filter_handle_t handle, const film_halation_grid_t *grid, uint16_t image_width)
+static void blur_mask(film_filter_handle_t handle, const film_halation_grid_t *grid, uint16_t image_width,
+                      float sigma_div)
 {
     /* 原型在全分辨率上做 sigma = w/60 的模糊；网格下采样与双线性上采样本身
      * 各带来约 1/12、1/6 格² 的方差，从目标方差里扣掉 */
-    float sigma = image_width / HALATION_SIGMA_DIV / grid->factor;
+    float sigma = image_width / sigma_div / grid->factor;
     float variance = sigma * sigma - 0.25f;
     if (variance <= 0.0f) {
         return;
@@ -198,17 +198,18 @@ static void blur_mask(film_filter_handle_t handle, const film_halation_grid_t *g
 
 uint16_t film_halation_line_pad(uint16_t max_width)
 {
-    /* 网格上的 sigma = w / 60 / factor：factor 未封顶时不超过 160/60，封顶（16）后为 w/960。
-     * 三次均值模糊的每次半径约为 sigma，这里留两倍余量 */
-    float sigma = HALATION_GRID_MAX_F / HALATION_SIGMA_DIV;
-    float oversized = (float)max_width / HALATION_SIGMA_DIV / FILM_HALATION_MAX_FACTOR;
+    /* 网格上的 sigma = w / 除数 / factor：factor 未封顶时不超过 160/除数，封顶（16）后为 w/除数/16。
+     * 除数取各用途里最小的（局部对比度，半径最大）。三次均值模糊的每次半径约为 sigma，这里留两倍余量 */
+    const float div = FILM_CLARITY_SIGMA_DIV < FILM_HALATION_SIGMA_DIV ? FILM_CLARITY_SIGMA_DIV : FILM_HALATION_SIGMA_DIV;
+    float sigma = HALATION_GRID_MAX_F / div;
+    float oversized = (float)max_width / div / FILM_HALATION_MAX_FACTOR;
     sigma = sigma > oversized ? sigma : oversized;
     return (uint16_t)(2.0f * sigma + 2.0f);
 }
 
 void film_halation_resolve(film_filter_handle_t handle, const film_halation_grid_t *grid, uint16_t width,
-                           uint16_t height)
+                           uint16_t height, float sigma_div)
 {
     normalize_mask(handle, grid, width, height);
-    blur_mask(handle, grid, width);
+    blur_mask(handle, grid, width, sigma_div);
 }

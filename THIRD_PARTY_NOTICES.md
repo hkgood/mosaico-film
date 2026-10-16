@@ -39,3 +39,7 @@ Leica, M6, Polaroid and SX-70 are trademarks of their respective owners.
 Mosaico Film is an independent software project and is not affiliated with or
 endorsed by those companies. References describe the camera-inspired user
 experience only.
+
+The film stock names (GOLD, SOFT, VERDE, CROSS, SILVER, FADED, NIGHT, PIXEL,
+STRAY) are original names for looks implemented in `components/film_filter`;
+they do not refer to, imitate or derive from any real film product.

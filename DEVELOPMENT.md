@@ -267,6 +267,29 @@ camera task stack is 10 KB and logs `stack free min` after every capture.
   is taller than the screen. Drag/inertia invalidate only the area below the header;
   a drag cancels the pressed row, so scrolling never toggles a setting.
 
+### Photos still developing in the album
+
+A photo only enters the library on `FILM_EVT_SAVED` (all files written). Until then
+`app_dev.c` tracks it in memory (`dev_item_t`, at most `DEV_ITEMS_MAX`): `SHUTTER_DONE`
+creates a queued item, the proof (`DEVELOPED`) is box-shrunk into a thumbnail, `PROGRESS`
+fills the bar, `SAVED`/`SHOT_FAILED` remove it (in the same frame the library gains the
+photo, so the grid never flickers). The album draws these cells first (dimmed proof,
+`QUEUED` or `DEVELOPING` + progress bar); they cannot be opened or selected, a tap only
+shows a toast. Photos resumed after a reboot have no proof/progress events and appear
+only once saved. Covered by `film_dev_items_test`.
+
+### Film looks and the grid pass
+
+`film_preset_t` has two optional primitives besides the curve/tint/halation/vignette/grain
+set: `grain_size` (grain noise coordinates advance slower, so one noise value covers a
+bigger block; still normalised to a 1440 px long edge) and `clarity` (large-radius local
+contrast). Clarity reuses the halation grid: the first pass stores the mean luminance
+instead of the highlight mask, the blur radius is `width / 14` instead of `width / 60`,
+and the finish pass adds `clarity * (pixel - local mean)`. A film therefore has halation
+**or** clarity (`film_preset_uses_grid()`), both go through the same two-pass/strip/reuse
+paths, so strip output stays bit-identical to whole-image output. STRAY 3200 uses both
+primitives; its canister art currently reuses SILVER's.
+
 ### Versioning and perf trace
 
 The firmware version comes from `CONFIG_APP_PROJECT_VER` (`sdkconfig.defaults`)
@@ -291,7 +314,7 @@ snapshots; leave it off in release builds because it costs frame time itself.
 ### Portable components
 
 - `components/film_ui` — screens, interaction state and `film_port_t`.
-- `components/film_filter` — eight deterministic film looks.
+- `components/film_filter` — nine deterministic film looks.
 - `components/film_darkroom` — viewfinder and full-resolution processing.
 - `components/film_gfx` — small RGB565 drawing primitives.
 - `components/film_assets` — generated asset table and partition image.

@@ -498,6 +498,7 @@ static void on_shake(film_app_t *app)
 
 static void handle_event(film_app_t *app, const film_event_t *ev)
 {
+    app_dev_event(app, ev);   /* 先更新"还在冲洗"列表：SAVED 时它和入册在同一帧完成，相册里不会闪 */
     switch (ev->type) {
     case FILM_EVT_SAVED:
         if (app->library && film_library_add(app->library, &ev->meta) == ESP_OK) {
@@ -568,7 +569,7 @@ esp_err_t film_app_create(const film_app_config_t *config, film_app_handle_t *re
     }
     app->port = config->port;
     app->rng = config->seed ? config->seed : 0x2545F491U;
-    app->thumb_pool = malloc(sizeof(uint16_t) * THUMB_MAX_W * THUMB_MAX_H * THUMB_CACHE_SLOTS);
+    app->thumb_pool = malloc(sizeof(uint16_t) * THUMB_MAX_W * THUMB_MAX_H * (THUMB_CACHE_SLOTS + DEV_ITEMS_MAX));
     app->cam.frozen = malloc(sizeof(uint16_t) * FILM_VF_M6_W * FILM_VF_M6_H);
     app->detail.pixels = malloc(sizeof(uint16_t) * FILM_VF_M6_W * FILM_VF_M6_H);
     app->redev.original = malloc(sizeof(uint16_t) * FILM_VF_M6_W * FILM_VF_M6_H);
@@ -588,6 +589,8 @@ esp_err_t film_app_create(const film_app_config_t *config, film_app_handle_t *re
     for (size_t i = 0; i < THUMB_CACHE_SLOTS; ++i) {
         app->thumbs[i].pixels = app->thumb_pool + i * THUMB_MAX_W * THUMB_MAX_H;
     }
+    /* 还在冲洗的小样缩略图用池子尾部的 DEV_ITEMS_MAX 张 */
+    app_dev_bind_pixels(app, app->thumb_pool + THUMB_CACHE_SLOTS * THUMB_MAX_W * THUMB_MAX_H);
     load_settings(app);
     app_apply_feedback_mode(app);
     const char *root = app->port->storage_root ? app->port->storage_root(app->port->ctx) : NULL;

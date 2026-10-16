@@ -166,6 +166,8 @@ typedef struct {
 #define THUMB_MAX_H 160
 #define THUMB_CACHE_SLOTS 24
 #define THUMB_LOADS_PER_FRAME 2
+/** 相册里同时展示的"还在冲洗"的照片数（待冲洗队列 3 张 + 1 张正在写盘） */
+#define DEV_ITEMS_MAX 4
 
 typedef struct {
     uint32_t id;            /*!< 0 表示空槽 */
@@ -174,6 +176,14 @@ typedef struct {
     bool failed;
     uint16_t *pixels;
 } thumb_slot_t;
+
+/** 还在冲洗的照片：只存在内存里，SAVED（进相册）或失败时消失 */
+typedef struct {
+    uint32_t id;            /*!< 0 表示空槽 */
+    uint16_t progress;      /*!< 0 = 排队中，1..FILM_PROGRESS_DONE = 正在冲洗 / 写盘 */
+    bool instant;           /*!< 宝丽来（相册里画成小相纸） */
+    thumb_slot_t thumb;     /*!< 小样缩略图；w == 0 表示小样还没到（或续冲没有小样） */
+} dev_item_t;
 
 /* ---------------------------------------------------------------- 相机页 */
 #define CAM_STACK_PRINT_PX 58
@@ -427,6 +437,10 @@ struct film_app_t {
     uint16_t *thumb_pool;
     int thumb_loads;            /*!< 本帧已从文件加载的缩略图数（限流） */
 
+    /* 还在冲洗的照片，按拍摄先后排列（见 app_dev.c） */
+    dev_item_t dev_items[DEV_ITEMS_MAX];
+    size_t n_dev;
+
     cam_state_t cam;
     album_state_t album;
     detail_state_t detail;
@@ -490,6 +504,12 @@ static inline bool app_crop_43(const film_app_t *app)
 }
 /** 取缩略图（未加载时排队加载，返回 NULL） */
 const thumb_slot_t *app_thumb(film_app_t *app, uint32_t id);
+/** 平台事件里与"还在冲洗的照片"有关的部分（拍下 → 小样 → 进度 → 入册 / 失败） */
+void app_dev_event(film_app_t *app, const film_event_t *ev);
+/** 第 k 张还在冲洗的照片（0 为最新），越界返回 NULL */
+const dev_item_t *app_dev_get(const film_app_t *app, size_t k);
+/** 小样缩略图的像素池（app 创建时分配 DEV_ITEMS_MAX 张的空间） */
+void app_dev_bind_pixels(film_app_t *app, uint16_t *pool);
 /** 照片总字节数（分享页显示） */
 uint32_t app_photos_bytes(film_app_t *app, const uint32_t *ids, size_t count);
 /** 打开分享页 */

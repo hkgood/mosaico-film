@@ -29,6 +29,10 @@
 #define FILM_VIGNETTE_INDEX_SHIFT   (FILM_RADIAL_Q + 1 - FILM_RADIAL_LUT_BITS)
 #define FILM_LEAK_INDEX_SHIFT       (FILM_RADIAL_Q - FILM_RADIAL_LUT_BITS)
 
+/* 红晕网格的模糊半径 = 图像宽 / 除数：高光红晕用小半径（光晕），局部对比度用大半径（"大片的明暗"） */
+#define FILM_HALATION_SIGMA_DIV     60.0f
+#define FILM_CLARITY_SIGMA_DIV      14.0f
+
 /* 高光红晕在低分辨率网格上模糊：长边缩到不超过 GRID_MAX 格，每格最多 MAX_FACTOR 像素见方 */
 #define FILM_HALATION_GRID_MAX      160
 #define FILM_HALATION_MAX_FACTOR    16
@@ -67,10 +71,23 @@ typedef struct {
     int8_t highlight_tint[FILM_CHANNELS];
     bool mono;
     float halation;
+    /**
+     * 局部对比度（大半径 clarity）：每个像素离它周围大片区域平均亮度的距离放大 (1 + clarity) 倍，
+     * 0 表示关闭。复用红晕的低分辨率网格（网格里存的是亮度均值而不是高光遮罩），
+     * 所以同一卷胶卷不能同时有红晕和局部对比度；有任一项的胶卷都走两遍管线。
+     */
+    float clarity;
     float vignette;
     float grain;
+    float grain_size;   /*!< 颗粒大小倍数，0 或 1 为标准；2 = 噪声坐标放慢一半，颗粒边长约两倍 */
     bool pixel;
 } film_preset_t;
+
+/** 该胶卷需要先得到全图网格（红晕遮罩 / 亮度均值）再收尾，即两遍管线 */
+static inline bool film_preset_uses_grid(const film_preset_t *preset)
+{
+    return preset->halation > 0.0f || preset->clarity > 0.0f;
+}
 
 const film_preset_t *film_preset_get(film_id_t film);
 
@@ -157,7 +174,9 @@ typedef struct {
     uint32_t seed;
     int32_t sat_q8;
     bool mono;
-    bool halation;
+    bool halation;                             /*!< 走两遍管线（红晕或局部对比度，共用网格） */
+    int32_t clarity_q8;                        /*!< 局部对比度强度（Q8），0 表示这卷是红晕 */
+    float grid_sigma_div;                      /*!< 网格模糊半径 = 图像宽 / 这个数 */
     bool leak;
     bool grain;
     /*
@@ -212,7 +231,7 @@ void film_halation_upsample_coord(uint16_t pos, const film_halation_grid_t *grid
                                   uint16_t *ret_index, uint8_t *ret_weight);
 /** 第一遍累加完遮罩后调用：换算成每格均值并模糊（单线程，网格很小） */
 void film_halation_resolve(film_filter_handle_t handle, const film_halation_grid_t *grid, uint16_t width,
-                           uint16_t height);
+                           uint16_t height, float sigma_div);
 
 /* 像素风（film_pixel.c）：先按格子行求颜色，再按图像行放大 */
 void film_pixel_prepare(film_develop_ctx_t *ctx);

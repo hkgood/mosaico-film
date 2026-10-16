@@ -2,6 +2,7 @@
 idf_component_register(
     SRCS
         "app.c"
+        "app_dev.c"
         "app_power.c"
         "cam_picker.c"
         "cam_sx.c"
