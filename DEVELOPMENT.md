@@ -241,11 +241,10 @@ therefore never rotate individual elements; only code outside `render` (pointer,
 damage, preview) knows about the hold direction. `crop_43` in the saved settings
 is no longer used for framing.
 
-Which pages rotate is decided in one place, `ui_follows_rot()` in `app_private.h`:
-camera (with the pull-down camera panel, which is full-screen), settings, album and
-the film (look) picker. Detail, share and re-develop stay upright. A new page that
-should rotate only needs to be added there; its code keeps using upright user
-coordinates.
+Which pages rotate is decided in one place, `ui_follows_rot()` in `app_private.h`.
+Every page does now (camera with its full-screen camera panel, album, detail,
+re-develop, share, film picker, settings). Page code keeps using upright user
+coordinates; to exclude a page, special-case it in that function.
 
 ### Still capture: do not parse JPEGs with the software decoder
 

@@ -466,11 +466,14 @@ void app_invalidate(film_app_t *app, gfx_rect_t rect);
 uint32_t app_random(film_app_t *app);
 /** 当前取景参数（胶卷、曝光、机身、握持方向）变化后通知平台 */
 void app_update_preview(film_app_t *app);
-/** 这一页的界面跟着握持方向转：取景、设置、相册、胶卷（风格选择）页；大图、分享、重冲洗页保持竖放 */
+/**
+ * 这一页的界面是否跟着握持方向转。目前所有页面都转：取景（含机身面板）、相册、大图、
+ * 重新冲洗、分享、胶卷（风格选择）、设置。页面代码始终按没转的版式（用户坐标）写；
+ * 以后若有页面不该转（比如要横向铺满的全屏播放），在这里排除即可。
+ */
 static inline bool ui_follows_rot(const film_app_t *app)
 {
-    return app->screen == SCR_CAMERA || app->screen == SCR_SETTINGS || app->screen == SCR_ALBUM ||
-           app->screen == SCR_FILM;
+    return app->screen < SCR_COUNT;
 }
 /** 界面此刻是转过的（横拿或倒拿）：触摸、绘制、损坏区域都要在屏幕与用户坐标之间换算 */
 static inline bool ui_rotated(const film_app_t *app)
