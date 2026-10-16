@@ -20,7 +20,7 @@
 
 static const char *TAG = "film_camera";
 
-#define CAMERA_TASK_STACK        6144
+#define CAMERA_TASK_STACK        10240   /*!< 拍照路径（取帧校验、传感器切换、on_still 回调）在这个任务里跑，6 KB 余量不明 */
 #define FILM_CAMERA_STATUS_LEN   48
 #define SENSOR_WIDTH             640
 #define SENSOR_HEIGHT            480
@@ -557,6 +557,8 @@ static void capture(film_camera_handle_t cam, const film_shot_t *shot)
     cam->capturing = false;
     xSemaphoreGive(cam->lock);
     cam->config.on_still(cam->config.ctx, shot, &still, &proof, err);
+    /* 栈余量：拍摄后重启时用来排除栈溢出 */
+    ESP_LOGI(TAG, "capture done, stack free min %u bytes", (unsigned)uxTaskGetStackHighWaterMark(NULL));
 }
 
 static void camera_task(void *arg)

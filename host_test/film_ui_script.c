@@ -308,42 +308,51 @@ int main(int argc, char **argv)
     CHECK(count_redraws(&s, 600) == 0);
 
     /* 面板底部的 SETTINGS 行 → 设置页：每行一点即切换并保存，回到取景页时面板已收起 */
-    tap(&s, 240, 305);
+    tap(&s, 240, 366);
     wait_ms(&s, 300);
     CHECK(s.app->screen == SCR_SETTINGS);
     snap(&s, "settings_page");
     const film_settings_t before = s.app->settings;
-    tap(&s, 240, 100);              /* 跳过开机动画 */
+    tap(&s, 240, 105);              /* 跳过开机动画 */
     CHECK(s.app->settings.skip_boot == 1);
-    tap(&s, 240, 158);              /* 声音 */
+    tap(&s, 240, 171);              /* 声音 */
     CHECK(s.app->settings.sound_off == 1);
-    tap(&s, 240, 216);              /* 振动 */
+    tap(&s, 240, 237);              /* 振动 */
     CHECK(s.app->settings.haptic_off == 1);
-    tap(&s, 240, 274);              /* 胶卷取景 */
+    tap(&s, 240, 303);              /* 胶卷取景 */
     CHECK(s.app->settings.film_look == !before.film_look);
-    tap(&s, 240, 332);              /* 关屏时长：30 秒 → 1 分钟 */
+    tap(&s, 240, 369);              /* 关屏时长：30 秒 → 1 分钟 */
     CHECK(s.app->settings.screen_timeout == 1);
     wait_ms(&s, 100);
     snap(&s, "settings_toggled");
     for (int i = 0; i < FILM_SCREEN_TIMEOUT_LEVELS - 1; ++i) {
-        tap(&s, 240, 332);          /* 循环一圈回到默认档 */
+        tap(&s, 240, 369);          /* 循环一圈回到默认档 */
     }
     CHECK(s.app->settings.screen_timeout == 0);
-    tap(&s, 240, 100);
-    tap(&s, 240, 158);
-    tap(&s, 240, 216);
-    tap(&s, 240, 274);
+    tap(&s, 240, 105);
+    tap(&s, 240, 171);
+    tap(&s, 240, 237);
+    tap(&s, 240, 303);
     CHECK(memcmp(&s.app->settings, &before, sizeof(before)) == 0);
-    tap(&s, 240, 400);              /* 点关于卡片不会切换任何设置 */
-    /* 手指略有滑动（超过轻点阈值）或按得久，只要没离开这一行，抬起时照样切换 */
-    drag(&s, 200, 100, 230, 108, 200);
+    tap(&s, 240, 440);              /* 点关于卡片不会切换任何设置 */
+    /* 手指略有滑动（没超过拖动阈值）或按得久，只要没离开这一行，抬起时照样切换 */
+    drag(&s, 200, 105, 208, 108, 200);
     CHECK(s.app->settings.skip_boot == 1);
-    drag(&s, 200, 100, 230, 108, 200);
+    drag(&s, 200, 105, 208, 108, 200);
     CHECK(s.app->settings.skip_boot == 0);
-    long_press(&s, 240, 158);
+    long_press(&s, 240, 171);
     CHECK(s.app->settings.sound_off == 1);
-    tap(&s, 240, 158);
+    tap(&s, 240, 171);
     CHECK(memcmp(&s.app->settings, &before, sizeof(before)) == 0);
+    /* 内容超过一屏：上拖滚到底，看到关于卡片；拖动不会切换设置 */
+    drag(&s, 240, 400, 240, 150, 300);
+    wait_ms(&s, 1500);
+    CHECK(s.app->settings_page.scroll > 50.0f);
+    CHECK(memcmp(&s.app->settings, &before, sizeof(before)) == 0);
+    snap(&s, "settings_bottom");
+    drag(&s, 240, 150, 240, 450, 300);   /* 拉回顶部 */
+    wait_ms(&s, 1500);
+    CHECK(s.app->settings_page.scroll == 0);
     tap(&s, 40, 30);                /* 返回键 */
     wait_ms(&s, 300);
     CHECK(s.app->screen == SCR_CAMERA && s.app->cam.overlay != CAM_OVL_PICKER);

@@ -11,7 +11,6 @@
 
 #include "esp_check.h"
 #include "esp_heap_caps.h"
-#include "esp_jpeg_dec.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_video_device.h"
@@ -371,9 +370,56 @@ static esp_err_t still_close(still_t *s)
     return err;
 }
 
+/** 大端 16 位 */
+static inline uint32_t be16(const uint8_t *p)
+{
+    return ((uint32_t)p[0] << 8) | p[1];
+}
+
+/**
+ * 沿 JPEG 段表走到 SOS：确认有 SOF 且尺寸正是 FILM_STILL_WIDTH×HEIGHT，所有段长都在帧内。
+ * 只读头部、每一步都做边界检查，不依赖软件解码器（原来用 jpeg_dec_parse_header 试解析，
+ * 在截断/错位的帧上它会报错；设备上拍摄后重启的日志正好停在这一步附近，所以换成不依赖解码器的检查）。
+ */
+static bool header_valid(const uint8_t *jpeg, size_t size)
+{
+    bool sof = false;
+    size_t pos = 2;   /* 跳过 SOI */
+    while (pos + 4 <= size) {
+        if (jpeg[pos] != 0xFF) {
+            return false;
+        }
+        const uint8_t marker = jpeg[pos + 1];
+        if (marker == 0xFF) {   /* 填充字节 */
+            ++pos;
+            continue;
+        }
+        if (marker == 0xD8 || marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7)) {
+            pos += 2;   /* 没有长度域的标记 */
+            continue;
+        }
+        const size_t len = be16(jpeg + pos + 2);
+        if (len < 2 || pos + 2 + len > size) {
+            return false;
+        }
+        if (marker == 0xDA) {   /* SOS：头部结束，后面是熵编码数据 */
+            return sof;
+        }
+        /* SOF0..SOF15（除 DHT=C4、JPG=C8、DAC=CC）：精度(1) 高(2) 宽(2) */
+        if (marker >= 0xC0 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC) {
+            if (len < 8 || be16(jpeg + pos + 5) != FILM_STILL_HEIGHT || be16(jpeg + pos + 7) != FILM_STILL_WIDTH) {
+                return false;
+            }
+            sof = true;
+        }
+        pos += 2 + len;
+    }
+    return false;
+}
+
 /*
- * DVP 偶尔丢字节或截断，坏帧的头部段解析不过（"JPEG segment format error"），
- * 存成原片后冲洗才失败、这张就白拍了。取帧时就检查 SOI/EOI 并试解析头部，坏帧直接跳过。
+ * DVP 偶尔丢字节或截断，坏帧存成原片后冲洗才失败、这张就白拍了。
+ * 取帧时就检查 SOI/EOI 与头部段，坏帧直接跳过。
  */
 static bool frame_valid(const uint8_t *jpeg, size_t size)
 {
@@ -384,20 +430,7 @@ static bool frame_valid(const uint8_t *jpeg, size_t size)
     for (size_t i = size - 2; i >= size - JPEG_EOI_SEARCH_BYTES && !eoi; --i) {
         eoi = jpeg[i] == 0xFF && jpeg[i + 1] == 0xD9;
     }
-    if (!eoi) {
-        return false;
-    }
-    jpeg_dec_config_t config = DEFAULT_JPEG_DEC_CONFIG();
-    jpeg_dec_handle_t decoder = NULL;
-    if (jpeg_dec_open(&config, &decoder) != JPEG_ERR_OK) {
-        return true;   /* 校验器开不起来就不拦，交给冲洗阶段 */
-    }
-    jpeg_dec_io_t io = { .inbuf = (uint8_t *)jpeg, .inbuf_len = (int)size };
-    jpeg_dec_header_info_t info = { 0 };
-    const bool ok = jpeg_dec_parse_header(decoder, &io, &info) == JPEG_ERR_OK && info.width == FILM_STILL_WIDTH &&
-                    info.height == FILM_STILL_HEIGHT;
-    jpeg_dec_close(decoder);
-    return ok;
+    return eoi && header_valid(jpeg, size);
 }
 
 /* 把第 STILL_TAKE_VALID_FRAME 张有效 JPEG 复制进 copy（容量 STILL_BUFFER_BYTES） */

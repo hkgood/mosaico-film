@@ -241,7 +241,21 @@ therefore never rotate individual elements; only code outside `render` (pointer,
 damage, preview) knows about the hold direction. `crop_43` in the saved settings
 is no longer used for framing.
 
-### Settings page speed
+Which pages rotate is decided in one place, `ui_follows_rot()` in `app_private.h`:
+camera (with the pull-down camera panel, which is full-screen), settings, album and
+the film (look) picker. Detail, share and re-develop stay upright. A new page that
+should rotate only needs to be added there; its code keeps using upright user
+coordinates.
+
+### Still capture: do not parse JPEGs with the software decoder
+
+`film_still.c` validates each DVP frame with `header_valid()` (a bounds-checked walk of
+the JPEG marker segments up to SOS, checking SOF size) plus SOI/EOI. It used to call
+`jpeg_dec_parse_header` on the camera task; the device log of the "reboot right after
+the shutter" bug stopped right at that point (reset reason 4, no core dump). The
+camera task stack is 10 KB and logs `stack free min` after every capture.
+
+### Settings page speed and scrolling
 
 - Touch no longer forces a full-screen redraw: `film_shell` trusts
   `film_app_step`/`film_app_damage`. Pages that mark their own damage
@@ -250,6 +264,9 @@ is no longer used for framing.
 - Interactive saves (settings toggles, film dial) use `app_save_settings_later`: one
   NVS write 0.8 s after the last change instead of one per tap. Shot counters still
   use the immediate `app_save_settings`.
+- The settings page scrolls when its content (rows + about card, same width and font)
+  is taller than the screen. Drag/inertia invalidate only the area below the header;
+  a drag cancels the pressed row, so scrolling never toggles a setting.
 
 ### Versioning and perf trace
 

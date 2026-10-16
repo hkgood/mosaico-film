@@ -293,11 +293,15 @@ typedef struct {
     bool picking_film;          /*!< 去了全屏胶卷页：回来时保留预览与选择，不重新进入 */
 } redev_state_t;
 
-/* 设置页：按下的行与返回键，"关于"信息在进入时取一次 */
+/* 设置页：按下的行与返回键，"关于"信息在进入时取一次；内容超过一屏时可上下滚动 */
 #define SETTINGS_ROWS 5
 typedef struct {
     int8_t pressed;             /*!< 按下的行，-1 表示没有 */
     bool back_down;
+    bool dragging;              /*!< 手指正在拖动滚动 */
+    float scroll;               /*!< 内容上移的像素数（0 = 顶部） */
+    float drag_start_scroll;
+    float velocity;             /*!< 松手后的惯性（像素/秒） */
     film_about_t about;
 } settings_page_state_t;
 
@@ -462,10 +466,16 @@ void app_invalidate(film_app_t *app, gfx_rect_t rect);
 uint32_t app_random(film_app_t *app);
 /** 当前取景参数（胶卷、曝光、机身、握持方向）变化后通知平台 */
 void app_update_preview(film_app_t *app);
-/** 取景页的界面此刻是转过的（横拿或倒拿）：触摸、绘制、损坏区域都要在屏幕与用户坐标之间换算 */
+/** 这一页的界面跟着握持方向转：取景、设置、相册、胶卷（风格选择）页；大图、分享、重冲洗页保持竖放 */
+static inline bool ui_follows_rot(const film_app_t *app)
+{
+    return app->screen == SCR_CAMERA || app->screen == SCR_SETTINGS || app->screen == SCR_ALBUM ||
+           app->screen == SCR_FILM;
+}
+/** 界面此刻是转过的（横拿或倒拿）：触摸、绘制、损坏区域都要在屏幕与用户坐标之间换算 */
 static inline bool ui_rotated(const film_app_t *app)
 {
-    return app->screen == SCR_CAMERA && app->rot != GFX_ROT_0;
+    return ui_follows_rot(app) && app->rot != GFX_ROT_0;
 }
 /**
  * M6 的取景范围由握持方向决定：竖着拿（0°/180°）裁成 4:3 横幅（与 1.0 一致），

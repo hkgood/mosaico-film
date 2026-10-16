@@ -175,10 +175,69 @@ static void check_rotated_ui(film_app_t *app)
     hold(app, GFX_ROT_90);
     tap(FILM_APP_SCREEN_W - 1 - M6_WINDOW_Y, M6_WINDOW_X);
     CHECK(app->screen == SCR_FILM);
-    tap(60, 40);
+    /* 胶卷页也跟着转：用户坐标的返回键 (60,40) 在 90° 下落在屏幕 (n-1-40, 60) */
+    tap(FILM_APP_SCREEN_W - 1 - 40, 60);
     CHECK(app->screen == SCR_CAMERA);
     hold(app, GFX_ROT_0);
     advance(500);
+}
+
+/** 屏幕上 (x,y) 在 rot 方向下对应的用户坐标 */
+static void to_user(int r, int x, int y, int *u, int *v)
+{
+    const int n = FILM_APP_SCREEN_W;
+    switch (r) {
+    case GFX_ROT_90:  *u = y;         *v = n - 1 - x; break;
+    case GFX_ROT_180: *u = n - 1 - x; *v = n - 1 - y; break;
+    default:          *u = n - 1 - y; *v = x;         break;
+    }
+}
+
+/** 设置、相册、胶卷（风格选择）页整页跟着握持方向转：与没转的版式逐像素一致，画面里没有实时取景 */
+static void check_page_rotates(film_app_t *app, screen_id_t screen, const char *name)
+{
+    const gfx_rect_t full = gfx_rect(0, 0, FILM_APP_SCREEN_W, FILM_APP_SCREEN_H);
+    hold(app, GFX_ROT_0);
+    app_go(app, screen);
+    advance(1500);
+    uint16_t *base = malloc(sizeof(uint16_t) * PIXELS);
+    CHECK(base);
+    render(base, full);
+    for (int r = GFX_ROT_90; r <= GFX_ROT_270; ++r) {
+        hold(app, (gfx_rot_t)r);
+        CHECK(app->screen == screen);
+        advance(300);
+        render(s_screen, full);
+        for (int y = 0; y < FILM_APP_SCREEN_H; ++y) {
+            for (int x = 0; x < FILM_APP_SCREEN_W; ++x) {
+                int u, v;
+                to_user(r, x, y, &u, &v);
+                if (s_screen[y * FILM_APP_SCREEN_W + x] != base[v * FILM_APP_SCREEN_W + u]) {
+                    fprintf(stderr, "%s rot %d: screen (%d,%d) != user (%d,%d)\n", name, r * 90, x, y, u, v);
+                    exit(1);
+                }
+            }
+        }
+    }
+    free(base);
+    /* 转着时点返回键（用户坐标 (40,30)）要能回到取景页 */
+    int sx = 0, sy = 0;
+    for (int y = 0; y < FILM_APP_SCREEN_H && !sx; ++y) {
+        for (int x = 0; x < FILM_APP_SCREEN_W; ++x) {
+            int u, v;
+            to_user(GFX_ROT_270, x, y, &u, &v);
+            if (u == 40 && v == 30) {
+                sx = x;
+                sy = y;
+                break;
+            }
+        }
+    }
+    tap(sx, sy);
+    CHECK(app->screen == SCR_CAMERA);
+    hold(app, GFX_ROT_0);
+    advance(300);
+    printf("%s: rotates with the device\n", name);
 }
 
 /** 设置页：按一行只重画这一行（局部重画与整屏重画逐像素一致），保存延迟到停手后 */
@@ -188,7 +247,7 @@ static void check_settings_row(film_app_t *app)
     app_go(app, SCR_SETTINGS);
     advance(200);
     render(s_screen, full);
-    const int cx = FILM_APP_SCREEN_W / 2, cy = HEADER_H + 10 + 58 + 26;   /* 第 2 行中央 */
+    const int cx = FILM_APP_SCREEN_W / 2, cy = HEADER_H + 12 + 66 + 29;   /* 第 2 行中央（行高 58、行距 66） */
     const uint8_t before = app->settings.sound_off;
     for (int phase = 0; phase < 2; ++phase) {     /* 0 按下，1 抬起（切换） */
         film_app_pointer(app, cx, cy, phase == 0, s_now);
@@ -208,11 +267,29 @@ static void check_settings_row(film_app_t *app)
     film_app_pointer(app, cx, cy, true, s_now);
     s_now += FRAME_MS;
     (void)film_app_step(app, s_now);
-    film_app_pointer(app, cx + 20, cy + 3, true, s_now);
+    film_app_pointer(app, cx + 6, cy + 3, true, s_now);
     s_now += FRAME_MS;
     CHECK(!film_app_step(app, s_now));
     film_app_pointer(app, 0, 400, false, s_now);   /* 抬在别处：取消，不切换 */
     advance(100);
+
+    /* 内容超过一屏：上拖滚动，局部重画与整屏重画逐像素一致；滚到底能看到关于卡片，不会滚过头 */
+    const float max = (float)(HEADER_H + 12 + SETTINGS_ROWS * 66 + 3 * 44 + 44 - FILM_APP_SCREEN_H);
+    CHECK(app->settings_page.scroll == 0 && max > 0);
+    film_app_pointer(app, cx, 380, true, s_now);
+    for (int y = 380; y >= 240; y -= 14) {
+        s_now += FRAME_MS;
+        film_app_pointer(app, cx, y, true, s_now);
+        (void)film_app_step(app, s_now);
+        const gfx_rect_t d = film_app_damage(app);
+        render(s_screen, d);
+        render(s_ref, full);
+        CHECK(memcmp(s_screen, s_ref, sizeof(uint16_t) * PIXELS) == 0);
+    }
+    film_app_pointer(app, cx, 240, false, s_now);
+    advance(1500);   /* 惯性滚完 */
+    CHECK(app->settings_page.scroll > 50.0f && app->settings_page.scroll <= max);
+    CHECK(app->settings_page.pressed == -1);
     app_go(app, SCR_CAMERA);
     advance(500);
 }
@@ -240,6 +317,9 @@ int main(void)
     check_rotated_ui(app);
     check_live_only("m6", gfx_rect(0, 0, SCREEN_W, M6_PLATE_Y));
     check_settings_row(app);
+    check_page_rotates(app, SCR_SETTINGS, "settings");
+    check_page_rotates(app, SCR_ALBUM, "album");
+    check_page_rotates(app, SCR_FILM, "film");
 
     /* 全屏胶卷页不显示取景；返回后取景照常只重画取景框 */
     tap(M6_WINDOW_X, M6_WINDOW_Y);

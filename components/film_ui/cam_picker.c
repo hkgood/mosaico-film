@@ -4,8 +4,9 @@
  * 交互：
  *   - 取景页没有其他弹出层、不在拍摄时，手指从顶边 PICKER_EDGE_PX 以内按下并向下拖 → 面板跟手拉出；
  *     松手时拉过 PICKER_OPEN_RATIO 或向下甩动就展开，否则收回。
- *   - 展开后：点卡片换机身（皮革合拢动画由 cam_switch_body 负责）；点面板下方空白、或向上推 → 收起。
- * 面板按屏幕物理方向绘制（与弹出面板、一卷拍完一致），不随握持方向旋转。
+ *   - 展开后面板铺满整个屏幕：点卡片换机身（皮革合拢动画由 cam_switch_body 负责）；
+ *     点 SETTINGS 行进设置页；点面板空白处、或向上推 → 收起。
+ * 面板与取景页一起跟着握持方向转（app.c 整页旋转），这里全部按没转的版式（用户坐标）绘制。
  *
  * 性能：面板不透明，取景页只画面板下方露出的部分（cam_picker_covered_rows 给出裁剪线）；
  * 打开期间取景定格（app.c），面板静止时整页不再重绘。
@@ -16,7 +17,7 @@
 #include "cam_private.h"
 
 #define PICKER_EDGE_PX      36      /*!< 顶边多高范围内按下才算"下拉" */
-#define PICKER_SHEET_H      362     /*!< 面板高度 */
+#define PICKER_SHEET_H      SCREEN_H /*!< 面板高度：展开时铺满整个屏幕 */
 #define PICKER_RADIUS       22
 #define PICKER_OPEN_RATIO   0.38f   /*!< 松手时拉出超过这个比例就展开 */
 #define PICKER_FLING_PX_S   600.0f  /*!< 甩动速度阈值（像素/秒） */
@@ -27,7 +28,7 @@
 
 #define CARD_W              214
 #define CARD_H              190
-#define CARD_Y              49      /*!< 相对面板顶部 */
+#define CARD_Y              70      /*!< 相对面板顶部 */
 #define CARD_GAP            8
 #define CARD_X0             ((SCREEN_W - 2 * CARD_W - CARD_GAP) / 2)
 #define CARD_RADIUS         7
@@ -36,8 +37,8 @@
 
 #define PICKER_VISIBLE_PULL 0.002f  /*!< 展开程度不超过它就当作完全收起，不画面板 */
 
-#define LOOK_ROW_GAP        40      /*!< SETTINGS 入口行：卡片下沿到行顶的距离 */
-#define LOOK_ROW_H          52      /*!< 够一根手指按（原来 34 太矮） */
+#define LOOK_ROW_GAP        70      /*!< SETTINGS 入口行：卡片下沿到行顶的距离（中间放机身名） */
+#define LOOK_ROW_H          72      /*!< 够一根手指按；一行大字 */
 #define LOOK_HIT_SLOP       12      /*!< 行外再多算这么多像素也算点中 */
 #define PICKER_SETTINGS_CARD 2      /*!< picker_pressed 里 SETTINGS 行的编号（0、1 是两台机身） */
 
@@ -64,13 +65,19 @@ static int sheet_top(const cam_state_t *cam)
     return (int)lroundf((cam->picker_pull - 1.0f) * PICKER_SHEET_H);
 }
 
+/** 面板下沿的圆角半径：铺满屏幕时下沿已在屏幕外，不要圆角（否则两个角会露出没画的画布） */
+static int sheet_radius(const cam_state_t *cam)
+{
+    return sheet_top(cam) + PICKER_SHEET_H >= SCREEN_H ? 0 : PICKER_RADIUS;
+}
+
 int cam_picker_covered_rows(const cam_state_t *cam)
 {
     if (cam->picker_pull <= PICKER_VISIBLE_PULL) {
         return 0;
     }
     /* 下沿两个圆角处会露出背后，从圆角开始的那几行仍要画取景页 */
-    const int rows = sheet_top(cam) + PICKER_SHEET_H - PICKER_RADIUS;
+    const int rows = sheet_top(cam) + PICKER_SHEET_H - sheet_radius(cam);
     return rows < 0 ? 0 : rows;
 }
 
@@ -251,12 +258,10 @@ static void draw_settings_row(film_app_t *app, gfx_canvas_t *c)
     const bool pressed = app->cam.picker_pressed == PICKER_SETTINGS_CARD;
     gfx_fill_round(c, r, CARD_RADIUS, pressed ? 0x2C2B28 : 0x1E1D1B, 255);
     gfx_stroke_round(c, r, CARD_RADIUS, 1, 0x3B3A37, 255);
+    /* 只有一行大字（原 14 px 的两倍左右：资源里最大的一档 25 px），下面不再放说明小字 */
     const gfx_text_style_t name =
-        ui_style(&font_jost_m14, 14, 0.08f, COLOR_CREAM, 230, GFX_ALIGN_LEFT, GFX_ROT_0);
-    gfx_text(c, &name, r.x + 16, r.y + 20, "SETTINGS");
-    const gfx_text_style_t sub =
-        ui_style(&font_jost_m10, UI_TEXT_CAPTION, 0.16f, COLOR_MUTED, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
-    gfx_text(c, &sub, r.x + 16, r.y + 37, "SOUND  \xC2\xB7  SCREEN  \xC2\xB7  VIEWFINDER  \xC2\xB7  ABOUT");
+        ui_style(&font_jost_m25, 25, 0.08f, COLOR_CREAM, 240, GFX_ALIGN_LEFT, GFX_ROT_0);
+    gfx_text(c, &name, r.x + 20, r.y + r.h / 2, "SETTINGS");
 
     /* 右侧的 > 箭头 */
     const int ax = r.x + r.w - 22;
@@ -286,10 +291,11 @@ void cam_picker_render(film_app_t *app, gfx_canvas_t *c)
 
     /* 面板：上方两个圆角伸到屏幕外，只露出下面两个 */
     const int top = sheet_top(cam);
-    const gfx_rect_t sheet = gfx_rect(0, top - PICKER_RADIUS, SCREEN_W, PICKER_SHEET_H + PICKER_RADIUS);
+    const int radius = sheet_radius(cam);
+    const gfx_rect_t sheet = gfx_rect(0, top - radius, SCREEN_W, PICKER_SHEET_H + radius);
     gfx_gradient_v(c, gfx_rect(0, top + PICKER_SHEET_H, SCREEN_W, PICKER_SHADOW_H), 0, COLOR_BLACK,
                    (uint8_t)lroundf(PICKER_SHADOW_ALPHA * p), COLOR_BLACK, 0);
-    gfx_tile(c, &img_tex_vulc, sheet, 0, 0, PICKER_RADIUS);
+    gfx_tile(c, &img_tex_vulc, sheet, 0, 0, radius);
     gfx_gradient_v(c, gfx_rect(0, top, SCREEN_W, 90), 0, COLOR_BLACK, 120, COLOR_BLACK, 0);
     gfx_fill(c, gfx_rect(PICKER_RADIUS, top + PICKER_SHEET_H - 1, SCREEN_W - 2 * PICKER_RADIUS, 1), COLOR_WHITE, 26);
 
@@ -421,8 +427,8 @@ bool cam_picker_gesture(film_app_t *app, const gesture_t *g)
             } else {
                 cam_switch_body(app, k_bodies[card].instant);   /* 内部会关掉弹出层，面板随后收起 */
             }
-        } else if (g->y >= sheet_top(cam) + PICKER_SHEET_H) {
-            cam->picker_open = false;
+        } else if (cam->picker_pull > 0.95f) {
+            cam->picker_open = false;   /* 面板铺满屏幕：点空白处收起 */
         }
         break;
     }
