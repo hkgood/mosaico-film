@@ -33,6 +33,7 @@ typedef enum {
     FILM_ID_NIGHT,      /*!< 夜影 800T */
     FILM_ID_PIXEL,      /*!< 像素 8-BIT */
     FILM_ID_STRAY,      /*!< 野猫 3200：粗粝高反差黑白 */
+    FILM_ID_SEPIA,      /*!< 棕褐 100：暖棕调的单色（分离色调实现） */
     FILM_ID_COUNT,
 } film_id_t;
 

@@ -86,6 +86,17 @@ static const film_preset_t s_presets[FILM_ID_COUNT] = {
         },
         .saturation = 1.0f, .mono = true, .clarity = 0.85f, .vignette = 0.62f, .grain = 0.13f, .grain_size = 2.0f,
     },
+    [FILM_ID_SEPIA] = {
+        .key = "sepia",
+        /* 柔和的单色影调：黑位微抬、高光收一点；颜色全部来自下面的分离色调（饱和度为 0 即先去色） */
+        .curve = {
+            CURVE5(0, 12, 64, 70, 128, 134, 192, 196, 255, 244),
+            CURVE5(0, 12, 64, 70, 128, 134, 192, 196, 255, 244),
+            CURVE5(0, 12, 64, 70, 128, 134, 192, 196, 255, 244),
+        },
+        .saturation = 0.0f, .shadow_tint = { 16, 4, -14 }, .highlight_tint = { 26, 12, -22 },
+        .vignette = 0.34f, .grain = 0.05f,
+    },
     [FILM_ID_PIXEL] = {
         .key = "pixel",
         .curve = { CURVE_IDENTITY, CURVE_IDENTITY, CURVE_IDENTITY },
