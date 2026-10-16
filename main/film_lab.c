@@ -422,14 +422,29 @@ static esp_err_t write_jpeg(void *ctx, film_darkroom_image_t *image, const char 
                  JPEG_QUALITY_FALLBACK);
         err = encode(run->lab, image, JPEG_QUALITY_FALLBACK, out, capacity, &bytes);
     }
+    if (err != ESP_OK) {
+        /* 成片编码失败：记下尺寸、格式与内存，设备上才能看出是哪一步没内存 */
+        ESP_LOGE(TAG, "encode %ux%u fmt=%d q%d -> %s (out buffer %u KB)", (unsigned)image->width,
+                 (unsigned)image->height, (int)image->format, quality, esp_err_to_name(err),
+                 (unsigned)(capacity / 1024));
+        log_psram("encode failed");
+    }
     FILM_PERF_LOG("lab", "jpeg encode %ux%u q%d: %u KB in %lld ms (out buffer %u KB) -> %s", (unsigned)image->width,
                   (unsigned)image->height, quality, (unsigned)(bytes / 1024),
                   (long long)((FILM_PERF_NOW() - encode_t0) / 1000), (unsigned)(capacity / 1024),
                   esp_err_to_name(err));
+    /*
+     * 成片像素在编码后不再需要（屏幕图与缩略图在编码前已取好）：先放掉再拼 EXIF。
+     * 拍立得的整张相纸 YUV420 约 5.4 MB，不放的话下面复制 JPEG 时 PSRAM 已经见底
+     * （设备日志：EXIF copy: PSRAM free 0 KB，每张拍立得都因此冲洗失败）。release 可重复调用。
+     */
+    film_darkroom_release(run->lab->darkroom, image);
     /* 成片带 EXIF：拼接时复制一份恰好大小的缓冲（编码器输出缓冲按最坏情况预留，偏大） */
     film_blob_t *blob = err == ESP_OK ? film_meta_make_blob(&run->job->shot, FILM_META_JPG, out, bytes) : NULL;
     heap_caps_free(out);
     if (err == ESP_OK && !blob) {
+        ESP_LOGE(TAG, "JPEG %u KB: no memory for the EXIF copy", (unsigned)(bytes / 1024));
+        log_psram("EXIF copy");
         err = ESP_ERR_NO_MEM;
     }
     if (err == ESP_OK) {
