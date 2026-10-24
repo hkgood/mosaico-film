@@ -320,9 +320,10 @@ def render_sprites(tmp: Path) -> dict[str, tuple[Image.Image, int, int]]:
     return out
 
 
-# 全屏胶卷页的 135 暗盒：离线 3D 渲染（透明底、带投影），8 张按同一裁切框导出为 2 倍网格尺寸。
+# 全屏胶卷页的 135 暗盒：离线 3D 渲染（透明底、带投影），8 张按同一裁切框导出为 2 倍网格尺寸；
+# stray / sepia 由 gen_film_cans.py 在现有渲染的圆柱体上重排文字、换色生成。
 # 顺序与 film_id_t 一致；每款缩成网格卡片与重新冲洗胶卷行两种尺寸。
-FILM_CANS = ["gold", "soft", "verde", "cross", "silver", "faded", "night", "pixel"]
+FILM_CANS = ["gold", "soft", "verde", "cross", "silver", "faded", "night", "pixel", "stray", "sepia"]
 CAN_GRID_H = 116
 CAN_ROW_H = 70
 

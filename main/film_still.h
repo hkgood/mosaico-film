@@ -56,6 +56,16 @@ const char *film_still_sensor_name(uint16_t pid);
 /** 取一张快门帧；失败时 ret->jpeg 为 NULL */
 esp_err_t film_still_capture(film_still_t *ret);
 
+/** film_still_exposure_index 的单位：曝光正好一帧、增益 1 倍 */
+#define FILM_STILL_EXPOSURE_UNIT 16u
+
+/**
+ * 读 OV3640 自动曝光此刻的结果，折算成"场景有多暗"：(曝光行数 + 额外行) / 每帧行数 × 增益，
+ * 以 FILM_STILL_EXPOSURE_UNIT 为一帧满曝光、1 倍增益。越大越暗。
+ * 与 film_still_capture 不同，取景流开着时也能调用（另开一个视频设备引用，只读寄存器）；只在相机任务里调用。
+ */
+esp_err_t film_still_exposure_index(uint32_t *ret_index);
+
 /**
  * 白平衡反馈（任意任务可调用）：用 used 拍的那张原片，对齐小样所需的校正为 residual
  * （film_balance.h 编码）。下一张的增益在 used 基础上按残差的色度部分逐步修正（带阻尼），

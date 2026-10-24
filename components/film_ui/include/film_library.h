@@ -67,7 +67,6 @@ typedef enum {
     FILM_FILE_RAW,
     FILM_FILE_SCREEN,
     FILM_FILE_THUMB,
-    FILM_FILE_PENDING,      /*!< MF000042.PND：待冲洗标记（见 film_pending.h），冲洗完成后删除 */
 } film_file_kind_t;
 
 typedef struct film_library_t *film_library_handle_t;

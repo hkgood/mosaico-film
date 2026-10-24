@@ -131,7 +131,7 @@ static void on_lab_busy(void *ctx, bool busy)
     }
 }
 
-/* 电量低于此且没在充电：不再开始全尺寸冲洗（原片已落盘，下次开机续冲） */
+/* 电量低于此且没在充电：不再接快门（拍下来也没电冲完） */
 #define LOW_BATTERY_NO_DEVELOP_PERCENT 5
 
 static bool on_can_develop(void *ctx)
@@ -150,7 +150,14 @@ static esp_err_t dev_shoot(void *ctx, const film_shot_t *shot)
     if (!p->camera) {
         return FILM_ERR_NO_CAMERA;
     }
-    ESP_RETURN_ON_ERROR(film_lab_reserve(p->lab), TAG, "lab not ready");
+    if (!on_can_develop(p)) {
+        return FILM_ERR_LOW_BATTERY;
+    }
+    /* 存储预热中、上一张还没冲完都是预期内的拒绝：不当错误打日志，界面给提示 */
+    const esp_err_t reserved = film_lab_reserve(p->lab);
+    if (reserved != ESP_OK) {
+        return reserved;
+    }
     film_perf_mark(FILM_PERF_SHUTTER);
     film_perf_mem("viewfinder at shutter");
     const esp_err_t err = film_camera_capture(p->camera, shot);
@@ -158,12 +165,6 @@ static esp_err_t dev_shoot(void *ctx, const film_shot_t *shot)
         film_lab_cancel_reserve(p->lab);
     }
     return err;
-}
-
-static size_t dev_pending_count(void *ctx)
-{
-    film_port_dev_handle_t p = ctx;
-    return film_lab_pending(p->lab);
 }
 
 static esp_err_t dev_redevelop(void *ctx, const film_shot_t *shot)
@@ -426,7 +427,6 @@ esp_err_t film_port_dev_create(const film_port_dev_config_t *config, film_port_d
         .preview_pause = dev_preview_pause,
         .shoot = dev_shoot,
         .redevelop = dev_redevelop,
-        .pending_count = dev_pending_count,
         .release_result = dev_release_result,
         .poll_event = dev_poll_event,
         .storage_root = dev_storage_root,

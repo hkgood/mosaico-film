@@ -47,6 +47,7 @@ static void test_defaults_and_empty(void)
     CHECK(!film_settings_read(store_load, &empty, &s));
     CHECK(s.version == FILM_SETTINGS_VERSION && s.roll == 1 && s.frame == 0 && s.date_stamp == 1);
     CHECK(s.skip_boot == 0 && s.sound_off == 0 && s.haptic_off == 0 && s.screen_timeout == 0);
+    CHECK(s.flash_off == 0);   /* 自动闪光默认开 */
     CHECK(!film_settings_read(NULL, NULL, &s));
 }
 
@@ -63,6 +64,7 @@ static void test_roundtrip(void)
     in.sound_off = 1;
     in.haptic_off = 1;
     in.screen_timeout = 2;
+    in.flash_off = 1;
     store_t st;
     store_put(&st, &in, sizeof(in));
     film_settings_t out;
@@ -92,7 +94,27 @@ static void test_legacy_sizes(void)
         CHECK(out.film == 5 && out.instant == 1 && out.roll == 7 && out.frame == 9 && out.crop_43 == 1);
         CHECK(out.film_look == (sizes[i] > 8 ? 1 : 0));
         CHECK(out.skip_boot == 0 && out.sound_off == 0 && out.haptic_off == 0 && out.screen_timeout == 0);
+        CHECK(out.flash_off == 0);
     }
+}
+
+/* 加自动闪光之前保存的 14 字节数据：原有设置全部保留，自动闪光为默认的开 */
+static void test_pre_flash_size(void)
+{
+    CHECK(offsetof(film_settings_t, flash_off) == 14);
+    film_settings_t in;
+    film_settings_defaults(&in);
+    in.roll = 3;
+    in.frame = 17;
+    in.sound_off = 1;
+    in.screen_timeout = 3;
+    in.flash_off = 1;   /* 不在 14 字节里，读出来应是默认 */
+    store_t st;
+    store_put(&st, &in, 14);
+    film_settings_t out;
+    CHECK(film_settings_read(store_load, &st, &out));
+    CHECK(out.roll == 3 && out.frame == 17 && out.sound_off == 1 && out.screen_timeout == 3);
+    CHECK(out.flash_off == 0);
 }
 
 static void test_corrupt(void)
@@ -179,6 +201,7 @@ int main(void)
     test_defaults_and_empty();
     test_roundtrip();
     test_legacy_sizes();
+    test_pre_flash_size();
     test_corrupt();
     test_framing_default_and_migration();
     test_screen_timeout();

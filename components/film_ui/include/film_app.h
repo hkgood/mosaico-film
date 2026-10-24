@@ -36,6 +36,7 @@ void film_app_pointer(film_app_handle_t handle, int x, int y, bool pressed, uint
 /** 实体按键 */
 typedef enum {
     FILM_KEY_SHUTTER = 0,   /*!< 快门键（设备上是机身的红色 AI 键） */
+    FILM_KEY_FLASH,         /*!< 自动闪光开关（设备上是 USB-C 左侧的 Boot 键）：按下即切换，任何页面都生效 */
 } film_key_t;
 
 /**

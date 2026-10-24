@@ -18,7 +18,7 @@
 static const char *TAG = "film_writer";
 
 #define WRITER_TASK_STACK   6144
-#define WRITER_QUEUE_LEN    14      /*!< 一次冲洗 4 项（JPEG、THM、SCR、commit），排队的待冲洗原片每张 1 项 */
+#define WRITER_QUEUE_LEN    8       /*!< 一次冲洗 4 项（JPEG、THM、SCR、commit），再加下一张拍摄的原片 1 项 */
 #define WRITE_CHUNK         (16 * 1024)   /*!< 每次 fwrite 的上限：LittleFS 写一段时会锁住整个分区 */
 #define IDLE_BIT            BIT0
 #define BLOB_CAPS           (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
@@ -110,7 +110,7 @@ typedef enum {
     ITEM_FILE = 0,      /*!< 整文件（RAW / JPEG） */
     ITEM_PREVIEW,       /*!< .THM / .SCR */
     ITEM_COMMIT,
-    ITEM_RAW,           /*!< 拍摄时的原片 + 续冲标记（独立小事务） */
+    ITEM_RAW,           /*!< 拍摄时的原片（独立小事务） */
 } item_kind_t;
 
 typedef struct {
@@ -122,8 +122,6 @@ typedef struct {
     uint16_t width;
     uint16_t height;
     esp_err_t err;              /*!< 仅 COMMIT：暗房的结果 */
-    bool keep_raw;              /*!< 仅 COMMIT：失败时保留 RAW 与 .PND */
-    uint8_t marker[FILM_PENDING_BYTES]; /*!< 仅 RAW：.PND 的内容 */
 } item_t;
 
 struct film_writer_t {
@@ -141,13 +139,12 @@ struct film_writer_t {
     int64_t photo_write_us;     /*!< 其中花在 NAND 写入上的时间（不含排队等待） */
 };
 
-/** keep_raw 为真时只清冲洗的产物（JPG / SCR / THM），RAW 与 .PND 留着等下次再冲 */
-static void remove_files(const char *root, uint32_t id, bool keep_raw)
+/** 删掉一张照片的全部文件（SCR / THM / JPG / RAW） */
+static void remove_files(const char *root, uint32_t id)
 {
-    static const film_file_kind_t kinds[] = { FILM_FILE_SCREEN, FILM_FILE_THUMB, FILM_FILE_JPEG, FILM_FILE_RAW,
-                                              FILM_FILE_PENDING };
+    static const film_file_kind_t kinds[] = { FILM_FILE_SCREEN, FILM_FILE_THUMB, FILM_FILE_JPEG, FILM_FILE_RAW };
     char path[FILM_PATH_MAX + 12];
-    const size_t count = keep_raw ? 3 : sizeof(kinds) / sizeof(kinds[0]);
+    const size_t count = sizeof(kinds) / sizeof(kinds[0]);
     for (size_t i = 0; i < count; ++i) {
         film_library_path(root, id, kinds[i], path, sizeof(path));
         remove(path);
@@ -165,13 +162,8 @@ static void finish_photo(film_writer_handle_t w, const item_t *item)
 {
     const esp_err_t err = item->err != ESP_OK ? item->err : w->photo_err;
     if (err != ESP_OK) {
-        remove_files(item->root, item->meta.id, item->keep_raw);
-    } else {
-        /* 冲洗完成：待冲洗标记不再需要（RAW 留作"重新冲洗"的原片） */
-        char path[FILM_PATH_MAX + 12];
-        film_library_path(item->root, item->meta.id, FILM_FILE_PENDING, path, sizeof(path));
-        remove(path);
-    }
+        remove_files(item->root, item->meta.id);
+    }   /* 成功：RAW 留作"重新冲洗"的原片 */
     if (item->err == ESP_OK) {
         const film_event_t ev = err == ESP_OK
                                     ? (film_event_t){ .type = FILM_EVT_SAVED, .photo_id = item->meta.id,
@@ -194,19 +186,15 @@ static void finish_photo(film_writer_handle_t w, const item_t *item)
     w->photo_write_us = 0;
 }
 
-/** 原片小事务：先 RAW 后 .PND，.PND 在就说明 RAW 完整；失败则两个都删。不碰 photo_err 等逐张照片的状态 */
+/** 原片小事务：写 RAW，失败则删掉。不碰 photo_err 等逐张照片的状态 */
 static void process_raw(item_t *item)
 {
     const int64_t t0 = FILM_PERF_NOW();
     char path[FILM_PATH_MAX + 12];
     film_library_path(item->root, item->meta.id, FILM_FILE_RAW, path, sizeof(path));
     esp_err_t err = film_writer_write_path(path, film_blob_data(item->blob), film_blob_size(item->blob));
-    if (err == ESP_OK) {
-        film_library_path(item->root, item->meta.id, FILM_FILE_PENDING, path, sizeof(path));
-        err = film_writer_write_path(path, item->marker, sizeof(item->marker));
-    }
     if (err != ESP_OK) {
-        remove_files(item->root, item->meta.id, false);
+        remove_files(item->root, item->meta.id);
     }
     const int64_t us = FILM_PERF_NOW() - t0;
     FILM_PERF_LOG("write", "raw %lu %u KB in %lld ms (%.0f KB/s) -> %s", (unsigned long)item->meta.id,
@@ -312,8 +300,7 @@ esp_err_t film_writer_raw(film_writer_handle_t writer, const char *root, const f
         film_blob_unref(blob);
         return ESP_ERR_INVALID_ARG;
     }
-    item_t item = { .kind = ITEM_RAW, .root = root, .meta = { .id = shot->photo_id }, .blob = blob };
-    film_pending_encode(shot, item.marker);
+    const item_t item = { .kind = ITEM_RAW, .root = root, .meta = { .id = shot->photo_id }, .blob = blob };
     const esp_err_t err = enqueue(writer, &item);
     if (err != ESP_OK) {
         film_blob_unref(blob);
@@ -338,31 +325,19 @@ esp_err_t film_writer_preview(film_writer_handle_t writer, const char *root, con
     return err;
 }
 
-static esp_err_t commit(film_writer_handle_t writer, const char *root, const film_photo_t *meta, esp_err_t err,
-                        bool keep_raw)
+esp_err_t film_writer_commit(film_writer_handle_t writer, const char *root, const film_photo_t *meta, esp_err_t err)
 {
     if (!writer || !root || !meta) {
         return ESP_ERR_INVALID_ARG;
     }
-    const item_t item = { .kind = ITEM_COMMIT, .root = root, .meta = *meta, .err = err, .keep_raw = keep_raw };
+    const item_t item = { .kind = ITEM_COMMIT, .root = root, .meta = *meta, .err = err };
     const esp_err_t qerr = enqueue(writer, &item);
     if (qerr != ESP_OK) {
         /* 队列满（不应发生）：等前面的写完再同步清理，免得留下半张照片 */
         (void)film_writer_wait_idle(writer, portMAX_DELAY);
-        remove_files(root, meta->id, keep_raw);
+        remove_files(root, meta->id);
     }
     return qerr;
-}
-
-esp_err_t film_writer_commit(film_writer_handle_t writer, const char *root, const film_photo_t *meta, esp_err_t err)
-{
-    return commit(writer, root, meta, err, false);
-}
-
-esp_err_t film_writer_commit_keep_raw(film_writer_handle_t writer, const char *root, const film_photo_t *meta,
-                                      esp_err_t err)
-{
-    return commit(writer, root, meta, err, true);
 }
 
 bool film_writer_wait_idle(film_writer_handle_t writer, uint32_t timeout_ms)

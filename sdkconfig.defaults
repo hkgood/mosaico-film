@@ -85,6 +85,13 @@ CONFIG_LITTLEFS_LOOKAHEAD_SIZE=8192
 CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# The driver is created per share and the idle app only has ~88 KB of internal
+# RAM left, so keep its internal footprint small (the default 16 RX + 16 TX
+# buffers did not fit: "Expected to init 16 rx buffer, actual is 9"). Dynamic TX
+# buffers are not allowed together with SPIRAM_TRY_ALLOCATE_WIFI_LWIP, so shrink
+# the static ones instead. One phone downloading photos needs no more.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_STATIC_TX_BUFFER_NUM=6
 
 # The AXI GDMA has three channel pairs, needed by the LCD SPI, the NAND SPI and
 # the camera DVP. Hardware SHA/AES would claim a fourth pair on first use and

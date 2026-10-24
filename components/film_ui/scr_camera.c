@@ -15,6 +15,7 @@
 #define SHOT_STUCK_MS        60000   /*!< 某一阶段等暗房的上限（事件丢失时兜底，正常不会触发） */
 #define SHOT_REVEAL_MS       520     /*!< 原片 → 小样的淡入 */
 #define SHOT_REVIEW_MS       1100    /*!< 小样至少停留这么久，让人看清胶卷效果 */
+#define SHOT_DONE_LINGER_MS  600     /*!< 冲洗完成（胶囊显示 DEVELOPED）后停留多久再飞进计数窗 */
 #define DEVELOP_PILL_W       172     /*!< 冲洗进度胶囊（用户方向，取景顶部居中） */
 #define DEVELOP_PILL_H       34
 #define DEVELOP_PILL_V       26      /*!< 胶囊上沿：落在亮框上沿（v = 18）之内 */
@@ -49,6 +50,11 @@
 #define BATTERY_M6_GAP_T     25
 #define BATTERY_SX_INSET_R   28      /*!< 距取景边缘 */
 #define BATTERY_SX_INSET_T   30
+/* 自动闪光标记（闪电 + "A"）：与电量同一行，紧挨在电量包围盒左边 */
+#define FLASH_BADGE_W        18
+#define FLASH_BADGE_H        BATTERY_BOX_H
+#define FLASH_BADGE_GAP      8       /*!< 距电量包围盒左边 */
+#define FLASH_BOLT_HALF_W    4       /*!< 闪电半宽（k_bolt_badge 的横向范围） */
 
 /* ---------------------------------------------------------------- 缓动 */
 
@@ -179,11 +185,23 @@ void cam_skip_shot_anim(film_app_t *app)
     app->dirty = true;
 }
 
+/** 上一张还在冲洗：M6 的定格/回看阶段，或 SX-70 的显影页，且暗房还没报告完成 */
+static bool cam_develop_busy(const cam_state_t *cam)
+{
+    const bool showing = cam->shot == SHOT_HOLD || cam->shot == SHOT_REVEAL || cam->overlay == CAM_OVL_DEVELOPING;
+    return showing && cam->dev_progress < FILM_PROGRESS_DONE;
+}
+
 void cam_fire(film_app_t *app)
 {
     cam_state_t *cam = &app->cam;
     if (cam->skin_swapping || cam->shot == SHOT_FLASH ||
         (cam->overlay != CAM_OVL_NONE && cam->overlay != CAM_OVL_DEVELOPING)) {
+        return;
+    }
+    /* 拍—冲串行：上一张还没冲完就不拍（界面上正显示着它的进度），冲完后动画没播完的直接结束 */
+    if (cam_develop_busy(cam)) {
+        app_toast_error(app, ESP_ERR_INVALID_STATE);
         return;
     }
     /* 上一张的拍后动画还没播完：直接结束它，不让动画挡住下一张 */
@@ -219,6 +237,7 @@ void cam_fire(film_app_t *app)
         .roll = app->settings.roll,
         .frame = (uint8_t)(app->settings.frame + 1),
         .time = has_time ? now_s : 0,
+        .flash_auto = app->settings.flash_off == 0,
     };
     const esp_err_t err = app->port->shoot(app->port->ctx, &shot);
     if (err != ESP_OK) {
@@ -234,8 +253,8 @@ void cam_fire(film_app_t *app)
     cam->dev_id = shot.photo_id;
     cam->dev_ready = false;
     cam->dev_progress = 0;
+    cam->dev_done_at = 0;
     if (shot.instant) {
-        cam->dev_done_at = 0;
         cam->dev_emerge_t0 = app->now + SHOT_FLASH_MS;
         cam_open(app, CAM_OVL_DEVELOPING);
     } else if (app->frame && m6_frame_fits(app->frame->width, app->frame->height)) {
@@ -324,21 +343,50 @@ static uint32_t battery_color(const film_battery_t *b)
     return b->percent > BATTERY_CRITICAL_PERCENT ? COLOR_AMBER : COLOR_LED;
 }
 
-/** 闪电（用户坐标，中心 cu, cv）：两个三角形拼成 */
-static void draw_bolt(gfx_canvas_t *c, const ui_frame_t *f, int cu, int cv, uint32_t color)
+/* 闪电由两个三角形拼成（相对中心的用户坐标）：上半 右上尖 → 左中 → 中，下半 左下尖 → 右中 → 中 */
+static const int8_t k_bolt_charge[2][6] = { { 2, -5, -3, 1, 1, 1 }, { -2, 5, 3, -1, -1, -1 } };   /*!< 充电，10 px 高 */
+static const int8_t k_bolt_badge[2][6] = { { 3, -7, -4, 1, 1, 1 }, { -3, 7, 4, -1, -1, -1 } };    /*!< 自动闪光，14 px 高 */
+/** 文字、图标下面垫暗色轮廓的四个偏移 */
+static const int8_t k_halo[4][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } };
+
+/** 闪电（用户坐标，中心 cu, cv） */
+static void draw_bolt(gfx_canvas_t *c, const ui_frame_t *f, const int8_t tris[2][6], int cu, int cv, uint32_t color,
+                      uint8_t alpha)
 {
-    static const int8_t k_tris[2][6] = {
-        { 2, -5, -3, 1, 1, 1 },     /* 上半：右上尖 → 左中 → 中 */
-        { -2, 5, 3, -1, -1, -1 },   /* 下半：左下尖 → 右中 → 中 */
-    };
     for (int t = 0; t < 2; ++t) {
         int p[3][2];
         for (int i = 0; i < 3; ++i) {
-            ui_point(f, cu + k_tris[t][2 * i], cv + k_tris[t][2 * i + 1], &p[i][0], &p[i][1]);
+            ui_point(f, cu + tris[t][2 * i], cv + tris[t][2 * i + 1], &p[i][0], &p[i][1]);
         }
         gfx_triangle_q4(c, p[0][0] * 16, p[0][1] * 16, p[1][0] * 16, p[1][1] * 16, p[2][0] * 16, p[2][1] * 16, color,
-                        255);
+                        alpha);
     }
+}
+
+/**
+ * 自动闪光已开：琥珀色闪电加一个 "A"，右上角 (right, top) 为用户坐标。
+ * 和电量一样先垫一圈暗色轮廓，亮场景里也看得清。
+ */
+static void draw_flash_badge(gfx_canvas_t *c, const ui_frame_t *f, int right, int top)
+{
+    const int left = right - FLASH_BADGE_W;
+    ui_safe_check(ui_rect(f, left, top, FLASH_BADGE_W, FLASH_BADGE_H), 0, "flash");
+    const int cu = left + FLASH_BOLT_HALF_W;
+    const int cv = top + FLASH_BADGE_H / 2;
+    for (int i = 0; i < 4; ++i) {
+        draw_bolt(c, f, k_bolt_badge, cu + k_halo[i][0], cv + k_halo[i][1], COLOR_BLACK, 110);
+    }
+    draw_bolt(c, f, k_bolt_badge, cu, cv, COLOR_AMBER, 255);
+
+    int tx, ty;
+    ui_point(f, cu + FLASH_BOLT_HALF_W + 2, cv, &tx, &ty);
+    gfx_text_style_t st = ui_style(&font_jost_m10, 10, 0.04f, COLOR_BLACK, 110, GFX_ALIGN_LEFT, f->rot);
+    for (int i = 0; i < 4; ++i) {
+        gfx_text(c, &st, tx + k_halo[i][0], ty + k_halo[i][1], "A");
+    }
+    st.color = COLOR_AMBER;
+    st.alpha = 255;
+    gfx_text(c, &st, tx, ty, "A");
 }
 
 /**
@@ -366,15 +414,14 @@ static void draw_battery(film_app_t *app, gfx_canvas_t *c, const ui_frame_t *f, 
     if (level_w > 0) {
         gfx_fill_round(c, ui_rect(f, body_u + 2, body_v + 2, level_w, BATTERY_BODY_H - 4), 1, color, 255);
     }
-    static const int8_t k_halo[4][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } };
     if (b->charging) {
         /* 闪电压在电量条上：先垫一圈深色轮廓，琥珀色才不会和奶油色电量条糊在一起 */
         const int cu = body_u + BATTERY_BODY_W / 2;
         const int cv = body_v + BATTERY_BODY_H / 2;
         for (int i = 0; i < 4; ++i) {
-            draw_bolt(c, f, cu + k_halo[i][0], cv + k_halo[i][1], COLOR_INK);
+            draw_bolt(c, f, k_bolt_charge, cu + k_halo[i][0], cv + k_halo[i][1], COLOR_INK, 255);
         }
-        draw_bolt(c, f, cu, cv, COLOR_AMBER);
+        draw_bolt(c, f, k_bolt_charge, cu, cv, COLOR_AMBER, 255);
     }
 
     char text[8];
@@ -452,12 +499,14 @@ void cam_draw_vf_overlay(film_app_t *app, gfx_canvas_t *c, gfx_rect_t vf, bool r
         gfx_stroke_round(c, patch, 0, 1, 0xFFECC8, 70);
         draw_level(app, c, &f, f.w / 2, f.h - 20);
     }
+    /* 右上角一行：电量，左边是自动闪光标记（读不到电量时标记位置不变） */
+    const int status_right = rangefinder ? ix + fw - BATTERY_M6_GAP_R : f.w - BATTERY_SX_INSET_R;
+    const int status_top = rangefinder ? iy + BATTERY_M6_GAP_T : BATTERY_SX_INSET_T;
     if (app->battery_valid) {
-        if (rangefinder) {
-            draw_battery(app, c, &f, ix + fw - BATTERY_M6_GAP_R, iy + BATTERY_M6_GAP_T);
-        } else {
-            draw_battery(app, c, &f, f.w - BATTERY_SX_INSET_R, BATTERY_SX_INSET_T);
-        }
+        draw_battery(app, c, &f, status_right, status_top);
+    }
+    if (app->settings.flash_off == 0) {
+        draw_flash_badge(c, &f, status_right - BATTERY_BOX_W - FLASH_BADGE_GAP, status_top);
     }
     /* 回看小样时日期已印在照片上，不再叠一层取景提示 */
     if (app->settings.date_stamp && app->cam.shot != SHOT_REVEAL) {
@@ -662,11 +711,9 @@ static void draw_m6_controls(film_app_t *app, gfx_canvas_t *c)
     snprintf(n, sizeof(n), "%02u", (unsigned)app->settings.frame);
     ui_glow_text(c, &font_jost_m19, &font_jost_m19_glow, 19, 0.02f, COLOR_AMBER, cam->counter_down ? 200 : 115,
                  GFX_ALIGN_CENTER, rot, M6_COUNTER_X, M6_COUNTER_Y, n);
-    /* 标签平时是 ROLL；有照片在后台排队冲洗时显示张数，空间快满时显示剩余张数 */
+    /* 标签平时是 ROLL；空间快满时显示剩余张数 */
     char label[20] = "ROLL";
-    if (app->pending) {
-        snprintf(label, sizeof(label), "DEV %u", app->pending);
-    } else if (app->shots_left >= 0 && app->shots_left <= FILM_SHOTS_LEFT_WARN) {
+    if (app->shots_left >= 0 && app->shots_left <= FILM_SHOTS_LEFT_WARN) {
         snprintf(label, sizeof(label), "%d LEFT", app->shots_left);
     }
     engrave_below(c, M6_COUNTER_X, M6_COUNTER_Y, M6_LABEL_GAP, label, false, rot);
@@ -728,9 +775,6 @@ static void draw_developing(film_app_t *app, gfx_canvas_t *c, gfx_rect_t vf)
         snprintf(label, sizeof(label), "DEVELOPED");
     } else if (cam->dev_progress) {
         snprintf(label, sizeof(label), "DEVELOPING  %u%%", (unsigned)(cam->dev_progress / 10));
-    } else if (cam->shot == SHOT_REVEAL && app->pending) {
-        /* 小样已出，全尺寸成片在后台排队（连拍停手后才开始冲） */
-        snprintf(label, sizeof(label), "QUEUED  %u", app->pending);
     } else {
         snprintf(label, sizeof(label), "DEVELOPING");
     }
@@ -937,8 +981,8 @@ static bool camera_step(film_app_t *app, uint32_t dt)
     /*
      * 拍摄动画的阶段推进（M6）：
      *   FLASH → HOLD（定格原片 + 进度）→ 小样到了 → REVEAL（原片淡到小样，进度条继续走）
-     *   → 小样看够 → FLY 飞进计数窗（全尺寸成片在后台延后冲洗，动画不等它）
-     * 等待小样时不逐帧重绘：事件自己会让界面重画。
+     *   → 暗房报告冲完（PROGRESS DONE）并停留片刻 → FLY 飞进计数窗；冲洗期间快门不响应
+     * 等待小样/冲洗时不逐帧重绘：事件自己会让界面重画。
      */
     if (cam->shot != SHOT_IDLE) {
         const uint32_t el = app->now - cam->shot_t0;
@@ -963,7 +1007,8 @@ static bool camera_step(film_app_t *app, uint32_t dt)
             cam->shot = SHOT_REVEAL;
             cam->shot_t0 = app->now;
             anim = true;
-        } else if ((cam->shot == SHOT_REVEAL && el >= SHOT_REVEAL_MS + SHOT_REVIEW_MS) ||
+        } else if ((cam->shot == SHOT_REVEAL && el >= SHOT_REVEAL_MS + SHOT_REVIEW_MS &&
+                    cam->dev_progress >= FILM_PROGRESS_DONE && app->now - cam->dev_done_at >= SHOT_DONE_LINGER_MS) ||
                    ((cam->shot == SHOT_HOLD || cam->shot == SHOT_REVEAL) && el >= SHOT_STUCK_MS)) {
             cam->shot = SHOT_FLY;
             cam->shot_t0 = app->now;
@@ -1035,7 +1080,7 @@ static void camera_gesture(film_app_t *app, const gesture_t *g)
  * 快门键（M6 与 SX-70 共用）：
  *   - 按下即拍，快门钮同时显示按下态，松开复位；
  *   - 长按菜单、机身选择开着时，第一下只把它们收起回到取景；
- *   - 一卷拍完、SX-70 显影中、M6 冲洗中、换机身动画中都不响应（触摸同样拍不了）。
+ *   - 一卷拍完、换机身动画中不响应；SX-70 显影中、M6 冲洗中按下只给"上一张还在冲洗"的提示（触摸同样）。
  */
 static void camera_key(film_app_t *app, film_key_t key, bool pressed)
 {
@@ -1061,7 +1106,7 @@ static void camera_key(film_app_t *app, film_key_t key, bool pressed)
         app_feedback(app, FILM_FEEDBACK_CLICK);
         return;
     case CAM_OVL_DEVELOPING:
-        break;   /* SX-70 显影页：快门键会结束它并立即拍下一张（cam_fire 里处理） */
+        break;   /* SX-70 显影页：冲完后快门键会结束它并立即拍下一张，冲洗中只给提示（cam_fire 里处理） */
     case CAM_OVL_ROLLEND:
     default:
         return;
@@ -1092,6 +1137,9 @@ static void m6_event(film_app_t *app, const film_event_t *ev)
     } else if (ev->type == FILM_EVT_PROGRESS) {
         if (ev->progress > cam->dev_progress) {
             cam->dev_progress = ev->progress > FILM_PROGRESS_DONE ? FILM_PROGRESS_DONE : ev->progress;
+            if (cam->dev_progress >= FILM_PROGRESS_DONE) {
+                cam->dev_done_at = app->now;
+            }
         }
     } else if (ev->type == FILM_EVT_SHOT_FAILED) {
         cam->shot = SHOT_IDLE;

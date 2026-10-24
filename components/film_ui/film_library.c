@@ -37,7 +37,6 @@ void film_library_path(const char *root, uint32_t id, film_file_kind_t kind, cha
         [FILM_FILE_RAW] = "_RAW.JPG",
         [FILM_FILE_SCREEN] = ".SCR",
         [FILM_FILE_THUMB] = ".THM",
-        [FILM_FILE_PENDING] = ".PND",
     };
     snprintf(buf, len, "%s/" ID_DIGITS_FMT "%s", root, (unsigned)id, suffix[kind]);
 }

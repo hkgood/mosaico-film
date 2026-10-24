@@ -1,7 +1,7 @@
 /*
  * 设置页：从取景页下拉的机身面板里的 SETTINGS 行进入。
  *
- *   跳过开机动画 / 声音 / 振动 / 胶卷取景 / 关屏时长，再加一张"关于"卡片（固件版本、相机、剩余空间）。
+ *   跳过开机动画 / 声音 / 振动 / 胶卷取景 / 自动闪光 / 关屏时长，再加一张"关于"卡片（固件版本、相机、剩余空间）。
  * 每行点一下即切换并立即保存；开关类用与取景页弹出面板相同的拨杆。页面没有取景，
  * 打开期间平台事件仍转给取景页，冲洗进度、保存结果不会丢。
  */
@@ -11,7 +11,7 @@
 
 #include "app_private.h"
 
-/* 布局（用户坐标，内容坐标 = 屏幕 y + scroll）：5 行设置 + 1 张与设置行等宽的关于卡片，超过一屏时可滚动 */
+/* 布局（用户坐标，内容坐标 = 屏幕 y + scroll）：6 行设置 + 1 张与设置行等宽的关于卡片，超过一屏时可滚动 */
 #define ROW_X           24
 #define ROW_W           (SCREEN_W - 2 * ROW_X)
 #define ROW_H           58
@@ -34,6 +34,7 @@ typedef enum {
     ROW_SOUND,
     ROW_HAPTIC,
     ROW_FILM_LOOK,
+    ROW_FLASH,
     ROW_SCREEN_OFF,
 } row_id_t;
 
@@ -110,6 +111,7 @@ static const char *const k_rows[SETTINGS_ROWS] = {
     [ROW_SOUND] = "SOUND",
     [ROW_HAPTIC] = "VIBRATION",
     [ROW_FILM_LOOK] = "FILM VIEWFINDER",
+    [ROW_FLASH] = "AUTO FLASH",
     [ROW_SCREEN_OFF] = "SCREEN OFF",
 };
 
@@ -127,6 +129,8 @@ static bool row_on(const film_settings_t *s, int i)
         return s->sound_off == 0;
     case ROW_HAPTIC:
         return s->haptic_off == 0;
+    case ROW_FLASH:
+        return s->flash_off == 0;
     default:
         return s->film_look != 0;
     }
@@ -226,6 +230,9 @@ static void toggle(film_app_t *app, int row)
     case ROW_FILM_LOOK:
         s->film_look = !s->film_look;
         app_update_preview(app);
+        break;
+    case ROW_FLASH:
+        s->flash_off = !s->flash_off;   /* 只影响下一次拍照，取景不用变 */
         break;
     default:
         s->screen_timeout = (uint8_t)((s->screen_timeout + 1) % FILM_SCREEN_TIMEOUT_LEVELS);

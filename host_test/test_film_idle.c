@@ -1,6 +1,7 @@
 /*
  * 屏幕休眠：15 s 调暗并停取景、30 s 关屏（只交出一张黑画面）；触摸、按键、拿起唤醒，
  * 唤醒的那一下不交给页面；手指按着或平台忙时不休眠；远程操作唤醒但不吞输入。
+ * 另外覆盖闪光键：任何页面按下即切换自动闪光，唤醒那一下不切换，取景显示标记，拍照请求带上开关。
  *
  * 用 PC 平台服务驱动完整的 film_app，只替换要观察的几个平台接口；时钟是虚拟的，
  * 几十秒的空闲瞬间跑完。
@@ -34,6 +35,7 @@ static struct {
     bool preview_paused;
     bool keep_awake;
     int shots;
+    bool last_flash_auto;       /*!< 最近一次拍摄请求带的自动闪光开关 */
     float accel[3];
 } g;
 
@@ -62,8 +64,8 @@ static void stub_preview_pause(void *ctx, bool paused)
 static esp_err_t stub_shoot(void *ctx, const film_shot_t *shot)
 {
     (void)ctx;
-    (void)shot;
     ++g.shots;
+    g.last_flash_auto = shot->flash_auto;
     return ESP_ERR_INVALID_STATE;   /* 只数次数，不真拍：界面当作"暗房忙"处理 */
 }
 
@@ -99,14 +101,25 @@ static void key(bool pressed)
     advance(FRAME_MS);
 }
 
-static void render_check_black(uint16_t *frame, bool want_black)
+static void flash_key(bool pressed)
+{
+    film_app_key(s_app, FILM_KEY_FLASH, pressed, s_now);
+    advance(FRAME_MS);
+}
+
+static void render(uint16_t *frame)
 {
     gfx_canvas_t c = {
         .pixels = frame, .width = FILM_APP_SCREEN_W, .height = FILM_APP_SCREEN_H,
         .stride = FILM_APP_SCREEN_W, .clip = { 0, 0, FILM_APP_SCREEN_W, FILM_APP_SCREEN_H },
     };
-    memset(frame, 0xFF, sizeof(uint16_t) * FILM_APP_SCREEN_W * FILM_APP_SCREEN_H);
     film_app_render(s_app, &c);
+}
+
+static void render_check_black(uint16_t *frame, bool want_black)
+{
+    memset(frame, 0xFF, sizeof(uint16_t) * FILM_APP_SCREEN_W * FILM_APP_SCREEN_H);
+    render(frame);
     bool black = true;
     for (int i = 0; i < FILM_APP_SCREEN_W * FILM_APP_SCREEN_H && black; ++i) {
         black = frame[i] == 0;
@@ -230,6 +243,60 @@ int main(void)
     touch(true);
     CHECK(app->touch.down);
     touch(false);
+
+    /* 自动闪光默认开，拍照请求带上它（上面按快门键拍的那次） */
+    CHECK(g.last_flash_auto && app->settings.flash_off == 0);
+
+    /* 取景右上角的闪光标记：只关掉闪光重画一次，变化只在电量左边那一小块 */
+    advance(2000);   /* 等提示条消失 */
+    uint16_t *other = malloc(sizeof(uint16_t) * FILM_APP_SCREEN_W * FILM_APP_SCREEN_H);
+    CHECK(other);
+    render(frame);
+    app->settings.flash_off = 1;
+    render(other);
+    app->settings.flash_off = 0;
+    int x0 = FILM_APP_SCREEN_W, y0 = FILM_APP_SCREEN_H, x1 = -1, y1 = -1;
+    for (int y = 0; y < FILM_APP_SCREEN_H; ++y) {
+        for (int x = 0; x < FILM_APP_SCREEN_W; ++x) {
+            if (frame[y * FILM_APP_SCREEN_W + x] != other[y * FILM_APP_SCREEN_W + x]) {
+                x0 = x < x0 ? x : x0;
+                y0 = y < y0 ? y : y0;
+                x1 = x > x1 ? x : x1;
+                y1 = y > y1 ? y : y1;
+            }
+        }
+    }
+    free(other);
+    CHECK(x1 >= 0);                                     /* 标记画出来了 */
+    CHECK(x0 > 300 && x1 < 400 && y0 > 20 && y1 < 80);  /* 只在取景右上角、电量左边 */
+
+    /* Boot 键：按下即切换并提示，松开不再切换；保存延迟到停手后；下一张不再请求闪光 */
+    flash_key(true);
+    CHECK(app->settings.flash_off == 1 && app->toast[0] && app->settings_dirty);
+    flash_key(false);
+    CHECK(app->settings.flash_off == 1);
+    advance(1200);
+    CHECK(!app->settings_dirty);
+    key(true);
+    key(false);
+    CHECK(g.shots == 2 && !g.last_flash_auto);
+    advance(2000);
+
+    /* 关屏时按闪光键：只唤醒，不切换 */
+    sleep_to_off();
+    flash_key(true);
+    CHECK(g.display == FILM_DISPLAY_ON && app->settings.flash_off == 1);
+    flash_key(false);
+    CHECK(app->settings.flash_off == 1);
+
+    /* 其他页面（设置页）上按也切换，页面不变 */
+    app_go(app, SCR_SETTINGS);
+    advance(200);
+    flash_key(true);
+    flash_key(false);
+    CHECK(app->screen == SCR_SETTINGS && app->settings.flash_off == 0);
+    app_go(app, SCR_CAMERA);
+    advance(2000);
 
     /* 删除界面时恢复亮屏 */
     sleep_to_off();

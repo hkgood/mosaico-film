@@ -17,8 +17,8 @@ extern "C" {
  * 素材在 film_assets_bind() 之前不可用（位图指针为 NULL）。
  * 绑定后各结构体只读；素材数据的内存（设备上为 Flash 映射）必须在整个运行期间有效。
  */
-#define FILM_ASSETS_LAYOUT_ID 0xbc328cc7u
-#define FILM_ASSETS_SIZE 4847024u
+#define FILM_ASSETS_LAYOUT_ID 0x23f8cd11u
+#define FILM_ASSETS_SIZE 4981340u
 
 /** 检查素材数据的版本与布局，并把全部字体、图片指向其中 */
 esp_err_t film_assets_bind(const void *data, size_t size);
@@ -123,6 +123,10 @@ extern gfx_image_t img_can_night;
 extern gfx_image_t img_can_night_s;
 extern gfx_image_t img_can_pixel;
 extern gfx_image_t img_can_pixel_s;
+extern gfx_image_t img_can_stray;
+extern gfx_image_t img_can_stray_s;
+extern gfx_image_t img_can_sepia;
+extern gfx_image_t img_can_sepia_s;
 extern gfx_image_t img_tex_alu;
 extern gfx_image_t img_tex_vulc;
 extern gfx_image_t img_tex_paper;

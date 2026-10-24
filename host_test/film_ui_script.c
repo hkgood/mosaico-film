@@ -321,20 +321,23 @@ int main(int argc, char **argv)
     CHECK(s.app->settings.haptic_off == 1);
     tap(&s, 240, 303);              /* 胶卷取景 */
     CHECK(s.app->settings.film_look == !before.film_look);
-    tap(&s, 240, 369);              /* 关屏时长：30 秒 → 1 分钟 */
+    CHECK(before.flash_off == 0);   /* 自动闪光默认开 */
+    tap(&s, 240, 369);              /* 自动闪光 */
+    CHECK(s.app->settings.flash_off == 1);
+    tap(&s, 240, 435);              /* 关屏时长：30 秒 → 1 分钟 */
     CHECK(s.app->settings.screen_timeout == 1);
     wait_ms(&s, 100);
     snap(&s, "settings_toggled");
     for (int i = 0; i < FILM_SCREEN_TIMEOUT_LEVELS - 1; ++i) {
-        tap(&s, 240, 369);          /* 循环一圈回到默认档 */
+        tap(&s, 240, 435);          /* 循环一圈回到默认档 */
     }
     CHECK(s.app->settings.screen_timeout == 0);
     tap(&s, 240, 105);
     tap(&s, 240, 171);
     tap(&s, 240, 237);
     tap(&s, 240, 303);
+    tap(&s, 240, 369);
     CHECK(memcmp(&s.app->settings, &before, sizeof(before)) == 0);
-    tap(&s, 240, 440);              /* 点关于卡片不会切换任何设置 */
     /* 手指略有滑动（没超过拖动阈值）或按得久，只要没离开这一行，抬起时照样切换 */
     drag(&s, 200, 105, 208, 108, 200);
     CHECK(s.app->settings.skip_boot == 1);
@@ -350,6 +353,9 @@ int main(int argc, char **argv)
     CHECK(s.app->settings_page.scroll > 50.0f);
     CHECK(memcmp(&s.app->settings, &before, sizeof(before)) == 0);
     snap(&s, "settings_bottom");
+    /* 点关于卡片（6 行之下，滚上来才看得到）不会切换任何设置 */
+    tap(&s, 240, HEADER_H + 12 + SETTINGS_ROWS * 66 - (int)s.app->settings_page.scroll + 66);
+    CHECK(memcmp(&s.app->settings, &before, sizeof(before)) == 0);
     drag(&s, 240, 150, 240, 450, 300);   /* 拉回顶部 */
     wait_ms(&s, 1500);
     CHECK(s.app->settings_page.scroll == 0);

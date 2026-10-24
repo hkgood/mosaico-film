@@ -70,6 +70,12 @@ void app_toast_error(film_app_t *app, esp_err_t err)
     case ESP_ERR_INVALID_STATE:
         app_toast(app, "上一张还在冲洗");
         break;
+    case FILM_ERR_STORAGE_PREPARING:
+        app_toast(app, "存储准备中，请稍候");
+        break;
+    case FILM_ERR_LOW_BATTERY:
+        app_toast(app, "电量太低，请先充电");
+        break;
     case ESP_ERR_NO_MEM:
         app_toast(app, "内存不足，请稍后再试");
         break;
@@ -262,6 +268,14 @@ void app_key_back_to_camera(film_app_t *app, film_key_t key, bool pressed)
     app_go(app, SCR_CAMERA);
 }
 
+void app_toggle_flash(film_app_t *app)
+{
+    app->settings.flash_off = !app->settings.flash_off;
+    app_save_settings_later(app);
+    app_feedback(app, FILM_FEEDBACK_LEVER);
+    app_toast(app, app->settings.flash_off ? "AUTO FLASH OFF" : "AUTO FLASH ON");
+}
+
 void film_app_key(film_app_handle_t app, film_key_t key, bool pressed, uint32_t now_ms)
 {
     if (!app) {
@@ -269,6 +283,14 @@ void film_app_key(film_app_handle_t app, film_key_t key, bool pressed, uint32_t 
     }
     app->now = now_ms;
     if (app_power_filter_key(app, pressed)) {
+        return;
+    }
+    /* 闪光键与页面无关：在哪一页按都切换同一个设置（设置页那一行随整页重画一起更新） */
+    if (key == FILM_KEY_FLASH) {
+        if (pressed) {
+            app_toggle_flash(app);
+        }
+        app->dirty = true;
         return;
     }
     if (app->ops->key) {
@@ -498,7 +520,6 @@ static void on_shake(film_app_t *app)
 
 static void handle_event(film_app_t *app, const film_event_t *ev)
 {
-    app_dev_event(app, ev);   /* 先更新"还在冲洗"列表：SAVED 时它和入册在同一帧完成，相册里不会闪 */
     switch (ev->type) {
     case FILM_EVT_SAVED:
         if (app->library && film_library_add(app->library, &ev->meta) == ESP_OK) {
@@ -524,6 +545,10 @@ static void handle_event(film_app_t *app, const film_event_t *ev)
     }
     default:
         break;
+    }
+    /* 拍—冲串行靠相机页跟踪冲洗进度（决定快门何时解锁）：用户中途去了别的页，事件也要送到相机页 */
+    if (app->ops != &g_screen_camera && g_screen_camera.event) {
+        g_screen_camera.event(app, ev);
     }
     if (app->ops->event) {
         app->ops->event(app, ev);
@@ -569,7 +594,7 @@ esp_err_t film_app_create(const film_app_config_t *config, film_app_handle_t *re
     }
     app->port = config->port;
     app->rng = config->seed ? config->seed : 0x2545F491U;
-    app->thumb_pool = malloc(sizeof(uint16_t) * THUMB_MAX_W * THUMB_MAX_H * (THUMB_CACHE_SLOTS + DEV_ITEMS_MAX));
+    app->thumb_pool = malloc(sizeof(uint16_t) * THUMB_MAX_W * THUMB_MAX_H * THUMB_CACHE_SLOTS);
     app->cam.frozen = malloc(sizeof(uint16_t) * FILM_VF_M6_W * FILM_VF_M6_H);
     app->detail.pixels = malloc(sizeof(uint16_t) * FILM_VF_M6_W * FILM_VF_M6_H);
     app->redev.original = malloc(sizeof(uint16_t) * FILM_VF_M6_W * FILM_VF_M6_H);
@@ -589,8 +614,6 @@ esp_err_t film_app_create(const film_app_config_t *config, film_app_handle_t *re
     for (size_t i = 0; i < THUMB_CACHE_SLOTS; ++i) {
         app->thumbs[i].pixels = app->thumb_pool + i * THUMB_MAX_W * THUMB_MAX_H;
     }
-    /* 还在冲洗的小样缩略图用池子尾部的 DEV_ITEMS_MAX 张 */
-    app_dev_bind_pixels(app, app->thumb_pool + THUMB_CACHE_SLOTS * THUMB_MAX_W * THUMB_MAX_H);
     load_settings(app);
     app_apply_feedback_mode(app);
     const char *root = app->port->storage_root ? app->port->storage_root(app->port->ctx) : NULL;
@@ -707,19 +730,6 @@ static void update_battery(film_app_t *app)
     }
 }
 
-/** 平台后台冲洗的待冲洗张数变了就重画（计数窗下的标签用它） */
-static void refresh_pending(film_app_t *app)
-{
-    if (!app->port->pending_count) {
-        return;
-    }
-    const unsigned pending = (unsigned)app->port->pending_count(app->port->ctx);
-    if (pending != app->pending) {
-        app->pending = pending;
-        app->dirty = true;
-    }
-}
-
 bool film_app_step(film_app_handle_t app, uint32_t now_ms)
 {
     if (!app) {
@@ -737,7 +747,6 @@ bool film_app_step(film_app_handle_t app, uint32_t now_ms)
     check_long_press(app);
     update_motion(app);
     update_battery(app);
-    refresh_pending(app);
     app_power_step(app);
     update_preview_frame(app);
     if (app->ops->step && app->ops->step(app, dt > 200 ? 200 : dt)) {

@@ -1,8 +1,6 @@
 /*
  * 暗房 · 相册：三列网格（普通照片裁满格子，宝丽来以小相纸显示），上下拖动带惯性，
  * SELECT 进入多选（最多 20 张），底栏：已选张数 | 删除（二次确认） | SEND TO PHONE。
- * 还在冲洗的照片（见 app_dev.c）排在最前面：小样缩略图 + 暗罩，排队时写 QUEUED，
- * 冲洗开始后画进度条；它们还没有文件，不能打开、不能选择，点一下只给提示。
  */
 #include <math.h>
 #include <stdio.h>
@@ -29,12 +27,6 @@ static int cell_width(int col)
     return col == 2 ? SCREEN_W - s_col_x[2] : CELL_W;
 }
 
-/** 网格里的格子总数：前 n_dev 个是还在冲洗的照片，后面是相册里的照片 */
-static size_t cell_count(const film_app_t *app)
-{
-    return app->n_dev + film_library_count(app->library);
-}
-
 static int view_bottom(const album_state_t *a)
 {
     return a->selecting ? SELECT_BAR_Y : SCREEN_H;
@@ -42,7 +34,7 @@ static int view_bottom(const album_state_t *a)
 
 static float max_scroll(film_app_t *app)
 {
-    const size_t n = cell_count(app);
+    const size_t n = film_library_count(app->library);
     const int rows = (int)((n + 2) / 3);
     const float content = (float)(GRID_TOP + rows * ROW_PITCH + 24);
     const float view = (float)view_bottom(&app->album);
@@ -94,13 +86,13 @@ static int cell_at(film_app_t *app, int x, int y)
         }
     }
     const int index = (cy / ROW_PITCH) * 3 + col;
-    return col >= 0 && index < (int)cell_count(app) ? index : -1;
+    return col >= 0 && index < (int)film_library_count(app->library) ? index : -1;
 }
 
-/** 画一格照片底图：flags 只用到 INSTANT（宝丽来画成小相纸），t 为 NULL 时画占位 */
-static void draw_thumb(gfx_canvas_t *c, bool instant, const thumb_slot_t *t, gfx_rect_t r)
+static void draw_cell(film_app_t *app, gfx_canvas_t *c, const film_photo_t *p, gfx_rect_t r)
 {
-    if (instant) {
+    const thumb_slot_t *t = app_thumb(app, p->id);
+    if (p->flags & FILM_PHOTO_INSTANT) {
         gfx_fill(c, r, 0x171716, 255);
         const gfx_rect_t paper = gfx_rect(r.x + (r.w - 86) / 2, r.y + 8, 86, 103);
         gfx_shadow(c, gfx_rect(paper.x, paper.y + 3, paper.w, paper.h), 0, 8, COLOR_BLACK, 150);
@@ -119,32 +111,11 @@ static void draw_thumb(gfx_canvas_t *c, bool instant, const thumb_slot_t *t, gfx
     }
 }
 
-static void draw_cell(film_app_t *app, gfx_canvas_t *c, const film_photo_t *p, gfx_rect_t r)
-{
-    draw_thumb(c, (p->flags & FILM_PHOTO_INSTANT) != 0, app_thumb(app, p->id), r);
-}
-
-/** 还在冲洗的格子：小样 + 暗罩；排队写 QUEUED，开始后画进度条 */
-static void draw_dev_cell(gfx_canvas_t *c, const dev_item_t *d, gfx_rect_t r)
-{
-    draw_thumb(c, d->instant, d->thumb.w ? &d->thumb : NULL, r);
-    gfx_fill(c, r, COLOR_BLACK, 120);
-    const bool queued = d->progress == 0;
-    const gfx_text_style_t st =
-        ui_style(&font_jost_m12, 12, 0.2f, queued ? COLOR_MUTED : COLOR_CREAM, 255, GFX_ALIGN_CENTER, GFX_ROT_0);
-    gfx_text(c, &st, r.x + r.w / 2, r.y + r.h / 2 - 8, queued ? "QUEUED" : "DEVELOPING");
-    if (!queued) {
-        const gfx_rect_t track = gfx_rect(r.x + 24, r.y + r.h / 2 + 12, r.w - 48, 4);
-        gfx_fill(c, track, COLOR_WHITE, 50);
-        gfx_fill(c, gfx_rect(track.x, track.y, track.w * d->progress / FILM_PROGRESS_DONE, track.h), COLOR_AMBER, 255);
-    }
-}
-
 static void album_render(film_app_t *app, gfx_canvas_t *c)
 {
     album_state_t *a = &app->album;
     gfx_fill(c, gfx_rect(0, 0, SCREEN_W, SCREEN_H), COLOR_INK, 255);
-    const size_t n = cell_count(app);
+    const size_t n = film_library_count(app->library);
     const int bottom = view_bottom(a);
     const gfx_rect_t saved = gfx_clip_push(c, gfx_rect(0, HEADER_H, SCREEN_W, bottom - HEADER_H));
     const int scroll = (int)lroundf(a->scroll);
@@ -156,15 +127,11 @@ static void album_render(film_app_t *app, gfx_canvas_t *c)
         }
         for (int col = 0; col < 3; ++col) {
             const size_t index = (size_t)(row * 3 + col);
-            if (index >= n) {
+            const film_photo_t *p = film_library_get(app->library, index);
+            if (!p) {
                 break;
             }
             const gfx_rect_t r = gfx_rect(s_col_x[col], y, cell_width(col), CELL_H);
-            if (index < app->n_dev) {
-                draw_dev_cell(c, app_dev_get(app, index), r);
-                continue;   /* 还在冲洗的照片不能选 */
-            }
-            const film_photo_t *p = film_library_get(app->library, index - app->n_dev);
             draw_cell(app, c, p, r);
             if (a->selecting) {
                 const bool on = is_selected(a, p->id, NULL);
@@ -215,7 +182,7 @@ static void album_render(film_app_t *app, gfx_canvas_t *c)
     } else {
         snprintf(title, sizeof(title), "ROLL %02u", (unsigned)app->settings.roll);
         snprintf(sub, sizeof(sub), "%u FRAMES", (unsigned)n);
-        ui_header(c, title, sub, film_library_count(app->library) ? "SELECT" : "", false);
+        ui_header(c, title, sub, n ? "SELECT" : "", false);
     }
 }
 
@@ -314,25 +281,20 @@ static void album_gesture(film_app_t *app, const gesture_t *g)
         if (index < 0) {
             return;
         }
-        if ((size_t)index < app->n_dev) {
-            app_toast(app, "这张还在冲洗，稍等一下");
-            return;
-        }
-        const size_t lib_index = (size_t)index - app->n_dev;
         if (a->selecting) {
-            toggle_selected(app, film_library_get(app->library, lib_index)->id);
+            toggle_selected(app, film_library_get(app->library, (size_t)index)->id);
         } else {
-            app_open_detail(app, lib_index);
+            app_open_detail(app, (size_t)index);
         }
         break;
     }
     case GEST_LONG: {
         /* 长按格子直接进入多选并选中它 */
         const int index = cell_at(app, g->x, g->y);
-        if (index >= (int)app->n_dev && !a->selecting) {
+        if (index >= 0 && !a->selecting) {
             a->selecting = true;
             a->n_selected = 0;
-            toggle_selected(app, film_library_get(app->library, (size_t)index - app->n_dev)->id);
+            toggle_selected(app, film_library_get(app->library, (size_t)index)->id);
         }
         break;
     }

@@ -1,5 +1,6 @@
 #include "film_camera.h"
 
+#include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -38,6 +39,14 @@ static const char *TAG = "film_camera";
 #define PAUSE_STREAM_OFF_US      (3 * 1000 * 1000)
 #define PAUSED_POLL_MS           1000     /*!< 关流暂停期间的兜底唤醒（恢复时会被立即叫醒） */
 #define STATS_INTERVAL_US        (10 * 1000 * 1000)
+/*
+ * 自动闪光（film_still_exposure_index，16 = 一帧满曝光、1 倍增益）：曝光已经拉满一帧、增益到 4 倍还不够才点灯。
+ * 初值，按真机暗光实拍再调；每次拍照的日志里都有这次的读数。
+ */
+#define FLASH_FIRE_INDEX         (4u * FILM_STILL_EXPOSURE_UNIT)
+/* 点灯后等取景的自动曝光在灯光下收敛：至少这么多帧，前后两帧读数相差不到 1/8 就算稳了，最多等这么久 */
+#define FLASH_SETTLE_MIN_FRAMES  3
+#define FLASH_SETTLE_MAX_US      (600 * 1000)
 #define SLOT_COUNT               3        /*!< 一张界面在用、一张待取或正在写，一张给界面换帧的瞬间 */
 #define SLOT_PIXELS              (FILM_VF_M6_W * FILM_VF_M6_H)
 #define BUFFER_CAPS              (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
@@ -214,7 +223,13 @@ esp_err_t film_camera_capture(film_camera_handle_t cam, const film_shot_t *shot)
         err = ESP_ERR_INVALID_STATE;
     } else {
         cam->pending = *shot;
-        cam->capture_pending = true;   /* 拍完取景自动恢复；冲洗被延后，不再占用取景 */
+        cam->capture_pending = true;
+        /*
+         * 拍—冲串行：拍完立刻接着冲洗，用不上取景。受理快门时就把取景置为暂停，
+         * 拍完流不再重开（省一次关/开流），由暗房冲洗结束（或拍照失败）时 hold_preview(false) 恢复。
+         * 本次拍摄仍先用着现有的取景流取小样（相机任务先处理拍摄再看 hold）。
+         */
+        cam->hold = true;
     }
     xSemaphoreGive(cam->lock);
     if (err == ESP_OK) {
@@ -538,9 +553,64 @@ static film_viewfinder_source_t grab_proof(film_camera_handle_t cam)
     return proof;
 }
 
+/** 点灯后让取景继续出帧（取回即还），直到自动曝光的读数稳定或超时 */
+static void flash_settle(film_camera_handle_t cam)
+{
+    const int64_t t0 = esp_timer_get_time();
+    uint32_t prev = 0;
+    uint32_t index = 0;
+    int frames = 0;
+    while (esp_timer_get_time() - t0 < FLASH_SETTLE_MAX_US) {
+        if (mosaico_camera_discard_frames(cam->camera, 1) != ESP_OK) {
+            break;
+        }
+        ++frames;
+        if (film_still_exposure_index(&index) != ESP_OK) {
+            continue;
+        }
+        const uint32_t diff = index > prev ? index - prev : prev - index;
+        if (frames >= FLASH_SETTLE_MIN_FRAMES && diff * 8u <= prev) {
+            break;
+        }
+        prev = index;
+    }
+    ESP_LOGI(TAG, "flash: exposure settled to %" PRIu32 " after %d frames, %lld ms", index, frames,
+             (long long)((esp_timer_get_time() - t0) / 1000));
+}
+
+/**
+ * 自动闪光：取景测得够暗才点灯，然后等取景曝光在灯光下收敛，小样与快门帧就都按灯光下的曝光来拍
+ * （暗房按小样对齐原片的亮度与颜色，两者必须在同一种光线下）。返回 true 表示灯已点亮，调用方负责关灯。
+ * 只有出 JPEG 的 OV3640 能读曝光寄存器；其余传感器不闪。
+ */
+static bool flash_prepare(film_camera_handle_t cam, const film_shot_t *shot)
+{
+    if (!shot->flash_auto || !cam->jpeg_still || !cam->streaming) {
+        return false;
+    }
+    uint32_t index = 0;
+    if (film_still_exposure_index(&index) != ESP_OK) {
+        ESP_LOGW(TAG, "flash: exposure unreadable, shooting without flash");
+        return false;
+    }
+    const bool dark = index >= FLASH_FIRE_INDEX;
+    ESP_LOGI(TAG, "flash: exposure index %" PRIu32 " (fires at %u) -> %s", index, (unsigned)FLASH_FIRE_INDEX,
+             dark ? "fire" : "skip");
+    if (!dark) {
+        return false;
+    }
+    if (mosaico_camera_flash_trigger(cam->camera) != ESP_OK) {
+        ESP_LOGW(TAG, "flash: LED on failed, shooting without flash");
+        return false;
+    }
+    flash_settle(cam);
+    return true;
+}
+
 static void capture(film_camera_handle_t cam, const film_shot_t *shot)
 {
     film_still_t still;
+    const bool flash = flash_prepare(cam, shot);
     const film_viewfinder_source_t proof = grab_proof(cam);
     /* 取景流在暂停期间一直关着（驱动帧缓冲让给暗房），由主循环在恢复时重开 */
     stream_stop(cam);
@@ -552,6 +622,11 @@ static void capture(film_camera_handle_t cam, const film_shot_t *shot)
         /* 没有 JPEG 的传感器：快门帧就是刚复制的取景帧，暗房把它编成原片（film_still_t.from_frame） */
         still = (film_still_t){ .from_frame = true };
         err = proof.uyvy ? ESP_OK : ESP_ERR_NO_MEM;
+    }
+    if (flash) {
+        (void)mosaico_camera_flash_stop(cam->camera);
+        /* 补光灯下的白平衡不能拿去修正环境光下的增益：awb 全 0 时暗房不做白平衡学习 */
+        still.awb = (film_still_awb_t){ 0 };
     }
     xSemaphoreTake(cam->lock, portMAX_DELAY);
     cam->capturing = false;

@@ -4,9 +4,10 @@
 
 #include "film_filter.h"
 
-/* 历史版本保存的大小：加 film_look 之前 8 字节；加 film_look 与一个保留字节后 10 字节 */
+/* 历史版本保存的大小：加 film_look 之前 8 字节；加 film_look 与一个保留字节后 10 字节；加 flash_off 之前 14 字节 */
 static const size_t k_history_sizes[] = {
     sizeof(film_settings_t),
+    offsetof(film_settings_t, flash_off),
     offsetof(film_settings_t, sound_off),
     offsetof(film_settings_t, film_look),
 };

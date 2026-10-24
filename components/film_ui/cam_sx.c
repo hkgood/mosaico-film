@@ -163,20 +163,17 @@ static void paper_rect(gfx_canvas_t *c, float x, float y, float w, float h, int 
 }
 
 /*
- * 显影程度 0..1：按时间推进（相纸上先是小样，雾层随时间褪去）。全尺寸成片在后台延后冲洗，
- * 显影页不再等它——否则连拍时每张都要等几秒；点一下或按快门键随时结束。
+ * 显影程度 0..1：就是暗房真实的冲洗进度（相纸上先是小样，雾层随真实进度褪去）。
+ * 拍—冲串行：冲完（PROGRESS DONE）才算显影完成，之后才能收页、拍下一张。
  */
-#define DEVELOP_ANIM_MS 3600
-
 static float develop_progress(const film_app_t *app)
 {
-    /* 相纸吐出一半时开始褪雾 */
-    return cam_progress(app->now, app->cam.dev_emerge_t0 + EMERGE_MS / 2, DEVELOP_ANIM_MS);
+    return (float)app->cam.dev_progress / (float)FILM_PROGRESS_DONE;
 }
 
 static bool develop_done(const film_app_t *app)
 {
-    return develop_progress(app) >= 1.0f;
+    return app->cam.dev_progress >= FILM_PROGRESS_DONE;
 }
 
 static void draw_developing(film_app_t *app, gfx_canvas_t *c)
@@ -249,7 +246,8 @@ bool cam_sx_step(film_app_t *app)
             return true;
         }
     }
-    return true;   /* 吐出与显影都按时间推进，逐帧重画；全尺寸冲洗此时不在运行 */
+    /* 只有相纸吐出的那一小段需要逐帧重画；显影由暗房的进度事件推动（事件到了界面会重画），冲洗期间不抢 CPU */
+    return app->now < cam->dev_emerge_t0 + EMERGE_MS + FRAME_PERIOD_MS;
 }
 
 void cam_sx_event(film_app_t *app, const film_event_t *ev)
@@ -340,8 +338,8 @@ void cam_sx_gesture(film_app_t *app, const gesture_t *g)
 {
     cam_state_t *cam = &app->cam;
     if (cam->overlay == CAM_OVL_DEVELOPING) {
-        /* 点一下随时结束显影页回到取景（成片在后台冲洗，不受影响） */
-        if (g->kind == GEST_TAP) {
+        /* 冲洗完成后点一下可以提前结束显影页回到取景；冲洗中不响应（要等它冲完） */
+        if (g->kind == GEST_TAP && develop_done(app)) {
             cam_skip_shot_anim(app);
         }
         return;

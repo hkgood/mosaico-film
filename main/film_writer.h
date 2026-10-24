@@ -9,8 +9,8 @@
  *
  * 缓冲用 film_blob 引用计数共享：RAW 原片同时被解码器读、被写盘任务写，两边都放手后才释放。
  *
- * 拍摄时的原片走另一条独立的小事务（film_writer_raw）：RAW 写完后紧接着写 .PND 续冲标记，
- * 不与某张照片的 commit 共享状态——拍摄在相机任务里入队，此时暗房可能正在冲上一张。
+ * 拍摄时的原片走另一条独立的小事务（film_writer_raw）：
+ * 不与某张照片的 commit 共享状态——拍摄在相机任务里入队，此时写盘任务可能还在写上一张的 JPG/THM/SCR。
  *
  * 线程：film_writer_file/preview/commit 只由暗房任务调用；film_writer_raw 由相机任务调用，
  * 内部入队有锁，可以与暗房任务并发；写盘在自己的任务里进行，
@@ -25,7 +25,6 @@
 
 #include "esp_err.h"
 #include "film_library.h"
-#include "film_pending.h"
 #include "film_port.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -63,8 +62,8 @@ void film_writer_delete(film_writer_handle_t writer);
 esp_err_t film_writer_file(film_writer_handle_t writer, const char *root, const film_photo_t *meta,
                            film_file_kind_t kind, film_blob_t *blob);
 /**
- * 拍摄时的原片：写 RAW（blob 的这份引用交给写盘任务），成功后再写 .PND（编码自 shot）。
- * 任何一步失败都删掉这两个文件，不发事件（之后暗房找不到 RAW 会报这张照片失败）。
+ * 拍摄时的原片：写 RAW（blob 的这份引用交给写盘任务）。
+ * 写失败就删掉它，不发事件（之后暗房找不到 RAW 会报这张照片失败）。
  * 入队失败时立即放掉引用并返回错误。
  */
 esp_err_t film_writer_raw(film_writer_handle_t writer, const char *root, const film_shot_t *shot, film_blob_t *blob);
@@ -76,13 +75,6 @@ esp_err_t film_writer_preview(film_writer_handle_t writer, const char *root, con
  * 否则（暗房失败）只清理已写的文件。入队失败时同步清理并返回错误。
  */
 esp_err_t film_writer_commit(film_writer_handle_t writer, const char *root, const film_photo_t *meta, esp_err_t err);
-/**
- * 同 film_writer_commit，但暗房失败时保留 RAW 与 .PND（可恢复的失败，如内存不足：下次还能再冲）。
- * 清掉的只是这次冲洗已经写出的 JPG / SCR / THM。
- */
-esp_err_t film_writer_commit_keep_raw(film_writer_handle_t writer, const char *root, const film_photo_t *meta,
-                                      esp_err_t err);
-
 /** 等到队列里的文件全部写完（暗房开始下一张大图前调用，免得两张照片的缓冲同时占内存） */
 bool film_writer_wait_idle(film_writer_handle_t writer, uint32_t timeout_ms);
 

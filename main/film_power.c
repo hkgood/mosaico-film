@@ -5,6 +5,7 @@
 
 #include "bsp/esp_mosaico.h"
 #include "esp_check.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "film_discharge.h"
 #include "freertos/FreeRTOS.h"
@@ -114,9 +115,10 @@ static film_discharge_sample_t telemetry(film_power_handle_t h, const bsp_batter
     if (sample.cpu_valid) {
         sample.cpu[0] = (uint8_t)load[0];
         sample.cpu[1] = (uint8_t)load[CPU_CORES - 1];
-        ESP_LOGI(TAG, "power %u%% %d mV avg %d mA %d mW | cpu0 %u%% cpu1 %u%% | display %s",
+        ESP_LOGI(TAG, "power %u%% %d mV avg %d mA %d mW | cpu0 %u%% cpu1 %u%% | display %s | internal free %u KB",
                  (unsigned)s->state_of_charge, s->voltage_mv, s->average_current_ma, s->average_power_mw, load[0],
-                 load[CPU_CORES - 1], k_display[display]);
+                 load[CPU_CORES - 1], k_display[display],
+                 (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
     } else {
         ESP_LOGI(TAG, "power %u%% %d mV avg %d mA %d mW | display %s", (unsigned)s->state_of_charge,
                  s->voltage_mv, s->average_current_ma, s->average_power_mw, k_display[display]);

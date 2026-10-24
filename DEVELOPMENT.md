@@ -289,8 +289,6 @@ and the finish pass adds `clarity * (pixel - local mean)`. A film therefore has 
 **or** clarity (`film_preset_uses_grid()`), both go through the same two-pass/strip/reuse
 paths, so strip output stays bit-identical to whole-image output. STRAY 3200 uses both
 primitives; its canister art currently reuses SILVER's.
-SEPIA 100 needs no primitive: saturation 0 plus shadow/highlight tints (the viewfinder
-look LUT folds the tints in, so it matches closely); its canister reuses FADED's.
 
 ### Versioning and perf trace
 
@@ -316,7 +314,7 @@ snapshots; leave it off in release builds because it costs frame time itself.
 ### Portable components
 
 - `components/film_ui` — screens, interaction state and `film_port_t`.
-- `components/film_filter` — ten deterministic film looks.
+- `components/film_filter` — nine deterministic film looks.
 - `components/film_darkroom` — viewfinder and full-resolution processing.
 - `components/film_gfx` — small RGB565 drawing primitives.
 - `components/film_assets` — generated asset table and partition image.

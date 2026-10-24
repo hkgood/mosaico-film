@@ -442,6 +442,10 @@ static esp_err_t wifi_driver_up(void)
         return ESP_OK;
     }
     const wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
+    /* 驱动初始化要一批内部 RAM 缓冲；失败时靠这行判断是不是被别处占光了 */
+    ESP_LOGI(TAG, "wifi init: internal free %u KB, largest block %u KB",
+             (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024),
+             (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL) / 1024));
     ESP_RETURN_ON_ERROR(esp_wifi_init(&init), TAG, "wifi init");
     /* 凭据由 Vibe Mode 管理：驱动不得把任何配置写回 NVS */
     const esp_err_t err = esp_wifi_set_storage(WIFI_STORAGE_RAM);

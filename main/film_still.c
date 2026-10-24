@@ -45,6 +45,7 @@ static const char *TAG = "film_still";
 #define OV3640_REG_EXTRA_H      0x302D
 #define OV3640_REG_EXTRA_L      0x302E
 #define OV3640_VTS_MARGIN       4
+#define OV3640_GAIN_FRAC_MASK   0x0F    /*!< 0x3001 低 4 位：1 + n/16 倍；高 4 位每一位再乘 2（数据手册 AGC[7:0]） */
 /*
  * 拍照模式比取景暗：取景是合并读出，同样的曝光时间信号更强。
  * 换算到拍照模式时把曝光行数再乘上这个系数补回来。
@@ -487,6 +488,33 @@ esp_err_t film_still_capture(film_still_t *ret)
              err == ESP_OK ? (unsigned)ret->size : 0, (long long)((esp_timer_get_time() - t0) / 1000), s.awb.gain[0],
              s.awb.gain[1], s.awb.gain[2]);
     return err;
+}
+
+/** 0x3001 的增益 × 16：(bit7+1)(bit6+1)(bit5+1)(bit4+1)(1 + bit[3:0]/16) */
+static uint32_t gain_x16(uint8_t reg)
+{
+    uint32_t gain = 16u + (reg & OV3640_GAIN_FRAC_MASK);
+    for (uint8_t bits = (uint8_t)(reg >> 4); bits; bits >>= 1) {
+        gain <<= bits & 1u;
+    }
+    return gain;
+}
+
+esp_err_t film_still_exposure_index(uint32_t *ret_index)
+{
+    const int fd = open(ESP_VIDEO_DVP_DEVICE_NAME, O_RDWR);
+    ESP_RETURN_ON_FALSE(fd >= 0, ESP_ERR_NOT_FOUND, TAG, "open %s: errno=%d", ESP_VIDEO_DVP_DEVICE_NAME, errno);
+    exposure_t e = { 0 };
+    uint16_t extra = 0;
+    esp_err_t err = exposure_read(fd, &e);
+    if (err == ESP_OK) {
+        err = reg_read16(fd, OV3640_REG_EXTRA_H, OV3640_REG_EXTRA_L, &extra);
+    }
+    close(fd);
+    ESP_RETURN_ON_ERROR(err, TAG, "read exposure");
+    const uint32_t vts = e.vts ? e.vts : 1u;
+    *ret_index = (uint32_t)(((uint64_t)e.exposure + extra) * gain_x16(e.gain_l) / vts);
+    return ESP_OK;
 }
 
 static uint8_t scale_gain(uint8_t gain, float factor)

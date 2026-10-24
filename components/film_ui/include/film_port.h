@@ -28,10 +28,14 @@ extern "C" {
  *   ESP_ERR_NO_MEM         内存不足
  *   FILM_ERR_STORAGE_FULL  存储空间已满
  *   FILM_ERR_NO_CAMERA     相机未连接
+ *   FILM_ERR_STORAGE_PREPARING 开机存储预热中，暂不接快门
+ *   FILM_ERR_LOW_BATTERY   电量太低，不再开始冲洗
  *   其他                   通用失败
  */
 #define FILM_ERR_STORAGE_FULL ESP_ERR_INVALID_SIZE
 #define FILM_ERR_NO_CAMERA    ESP_ERR_NOT_FOUND
+#define FILM_ERR_STORAGE_PREPARING ESP_ERR_TIMEOUT
+#define FILM_ERR_LOW_BATTERY  ESP_ERR_NOT_SUPPORTED
 
 /**
  * 一张全分辨率照片在存储上的估算占用（原片 ≈0.5 MB + 成片 ≈1 MB + 屏幕图/缩略图 ≈0.3 MB，留余量）。
@@ -96,6 +100,11 @@ typedef struct {
      * film 为 FILM_ID_COUNT 时返回未冲洗的原片。
      */
     bool preview_only;
+    /**
+     * 自动闪光（只对新拍的照片有意义）：平台测得取景够暗时先点亮补光灯、等取景曝光在灯光下收敛，
+     * 再取小样和快门帧，拍完立即关灯。平台没有补光灯或测不了光时忽略。
+     */
+    bool flash_auto;
 } film_shot_t;
 
 /*
@@ -196,11 +205,12 @@ typedef struct {
      */
     void (*preview_pause)(void *ctx, bool paused);
 
-    /* 拍摄与重新冲洗（异步，结果走事件）；忙时返回 ESP_ERR_INVALID_STATE */
+    /*
+     * 拍摄与重新冲洗（异步，结果走事件）；忙时返回 ESP_ERR_INVALID_STATE。
+     * 拍—冲串行：shoot 成功后到 PROGRESS(DONE)/SHOT_FAILED 之前，界面不应再发 shoot。
+     */
     esp_err_t (*shoot)(void *ctx, const film_shot_t *shot);
     esp_err_t (*redevelop)(void *ctx, const film_shot_t *shot);
-    /** 已拍下、还没冲出成片的张数（拍冲解耦后后台排队冲洗）；可为 NULL（同步冲洗的平台） */
-    size_t (*pending_count)(void *ctx);
     /** 归还 DEVELOPED 事件里的 screen 缓冲 */
     void (*release_result)(void *ctx, const uint16_t *screen);
 

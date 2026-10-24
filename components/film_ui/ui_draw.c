@@ -29,12 +29,10 @@ static const film_info_t s_films[FILM_ID_COUNT] = {
                         &img_can_night, &img_can_night_s },
     [FILM_ID_PIXEL] = { "PIXEL 8BIT", "PIXEL", "8BIT", "8 BIT", "32-colour palette with light dithering.", 0x7B3FE4,
                         &img_can_pixel, &img_can_pixel_s },
-    /* 暗盒图暂时与 SILVER 共用（需要单独的 3D 渲染才能有专属暗盒）；名称、ISO 与色点区分开 */
     [FILM_ID_STRAY] = { "STRAY 3200", "STRAY", "3200", "ISO 3200", "Crushed blacks, blown highlights, coarse grain.",
-                        0x8C2F2F, &img_can_silver, &img_can_silver_s },
-    /* 暗盒图暂时借用 FADED 的暖棕色暗盒 */
+                        0x8C2F2F, &img_can_stray, &img_can_stray_s },
     [FILM_ID_SEPIA] = { "SEPIA 100", "SEPIA", "100", "ISO 100", "Warm brown-toned monochrome, soft and quiet.",
-                        0x8B5A2B, &img_can_faded, &img_can_faded_s },
+                        0x8B5A2B, &img_can_sepia, &img_can_sepia_s },
 };
 
 int film_wrap(int film)
