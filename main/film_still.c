@@ -104,6 +104,8 @@ typedef struct {
     uint32_t count;
     bool streaming;
     bool switched;
+    uint16_t width;                 /*!< 这次拍照的 JPEG 尺寸（film_capture_mode 选的拍照格式） */
+    uint16_t height;
     esp_cam_sensor_format_t preview_format;
     exposure_t preview_exposure;
     film_still_awb_t awb;           /*!< 这次锁定的白平衡增益 */
@@ -258,7 +260,7 @@ static esp_err_t awb_lock(int fd, const film_still_awb_t *awb)
 
 /* ---------------------------------------------------------------- 原生流 */
 
-static esp_err_t find_jpeg_format(int fd, esp_cam_sensor_format_t *ret)
+static esp_err_t find_jpeg_format(int fd, uint16_t width, uint16_t height, esp_cam_sensor_format_t *ret)
 {
     for (uint32_t i = 0;; ++i) {
         struct v4l2_sensor_format_enum entry = { .index = i };
@@ -266,8 +268,7 @@ static esp_err_t find_jpeg_format(int fd, esp_cam_sensor_format_t *ret)
             return ESP_ERR_NOT_FOUND;
         }
         const esp_cam_sensor_format_t *f = &entry.format;
-        if (f->format == ESP_CAM_SENSOR_PIXFORMAT_JPEG && f->width == FILM_STILL_WIDTH &&
-            f->height == FILM_STILL_HEIGHT) {
+        if (f->format == ESP_CAM_SENSOR_PIXFORMAT_JPEG && f->width == width && f->height == height) {
             *ret = *f;
             return ESP_OK;
         }
@@ -281,8 +282,8 @@ static esp_err_t still_open(still_t *s)
     ESP_RETURN_ON_ERROR(v4l2(s->fd, VIDIOC_G_SENSOR_FMT, &s->preview_format, "G_SENSOR_FMT"), TAG, "preview fmt");
     ESP_RETURN_ON_ERROR(exposure_read(s->fd, &s->preview_exposure), TAG, "preview exposure");
     esp_cam_sensor_format_t capture;
-    ESP_RETURN_ON_ERROR(find_jpeg_format(s->fd, &capture), TAG, "JPEG %dx%d format", FILM_STILL_WIDTH,
-                        FILM_STILL_HEIGHT);
+    ESP_RETURN_ON_ERROR(find_jpeg_format(s->fd, s->width, s->height, &capture), TAG, "JPEG %ux%u format",
+                        (unsigned)s->width, (unsigned)s->height);
     ESP_RETURN_ON_ERROR(v4l2(s->fd, VIDIOC_S_SENSOR_FMT, &capture, "S_SENSOR_FMT capture"), TAG, "switch");
     s->switched = true;
     exposure_t reset;
@@ -301,8 +302,8 @@ static esp_err_t still_open(still_t *s)
 
     struct v4l2_format format = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE };
     ESP_RETURN_ON_ERROR(v4l2(s->fd, VIDIOC_G_FMT, &format, "G_FMT"), TAG, "get format");
-    format.fmt.pix.width = FILM_STILL_WIDTH;
-    format.fmt.pix.height = FILM_STILL_HEIGHT;
+    format.fmt.pix.width = s->width;
+    format.fmt.pix.height = s->height;
     format.fmt.pix.pixelformat = V4L2_PIX_FMT_JPEG;
     /* 不设置时 esp_video 按 宽×高×2 申请（每块 6 MB） */
     format.fmt.pix.sizeimage = STILL_BUFFER_BYTES;
@@ -378,11 +379,11 @@ static inline uint32_t be16(const uint8_t *p)
 }
 
 /**
- * 沿 JPEG 段表走到 SOS：确认有 SOF 且尺寸正是 FILM_STILL_WIDTH×HEIGHT，所有段长都在帧内。
+ * 沿 JPEG 段表走到 SOS：确认有 SOF 且尺寸正是 width×height，所有段长都在帧内。
  * 只读头部、每一步都做边界检查，不依赖软件解码器（原来用 jpeg_dec_parse_header 试解析，
  * 在截断/错位的帧上它会报错；设备上拍摄后重启的日志正好停在这一步附近，所以换成不依赖解码器的检查）。
  */
-static bool header_valid(const uint8_t *jpeg, size_t size)
+static bool header_valid(const uint8_t *jpeg, size_t size, uint16_t width, uint16_t height)
 {
     bool sof = false;
     size_t pos = 2;   /* 跳过 SOI */
@@ -408,7 +409,7 @@ static bool header_valid(const uint8_t *jpeg, size_t size)
         }
         /* SOF0..SOF15（除 DHT=C4、JPG=C8、DAC=CC）：精度(1) 高(2) 宽(2) */
         if (marker >= 0xC0 && marker <= 0xCF && marker != 0xC4 && marker != 0xC8 && marker != 0xCC) {
-            if (len < 8 || be16(jpeg + pos + 5) != FILM_STILL_HEIGHT || be16(jpeg + pos + 7) != FILM_STILL_WIDTH) {
+            if (len < 8 || be16(jpeg + pos + 5) != height || be16(jpeg + pos + 7) != width) {
                 return false;
             }
             sof = true;
@@ -422,7 +423,7 @@ static bool header_valid(const uint8_t *jpeg, size_t size)
  * DVP 偶尔丢字节或截断，坏帧存成原片后冲洗才失败、这张就白拍了。
  * 取帧时就检查 SOI/EOI 与头部段，坏帧直接跳过。
  */
-static bool frame_valid(const uint8_t *jpeg, size_t size)
+static bool frame_valid(const uint8_t *jpeg, size_t size, uint16_t width, uint16_t height)
 {
     if (size <= JPEG_EOI_SEARCH_BYTES || size > STILL_BUFFER_BYTES || jpeg[0] != 0xFF || jpeg[1] != 0xD8) {
         return false;
@@ -431,7 +432,7 @@ static bool frame_valid(const uint8_t *jpeg, size_t size)
     for (size_t i = size - 2; i >= size - JPEG_EOI_SEARCH_BYTES && !eoi; --i) {
         eoi = jpeg[i] == 0xFF && jpeg[i + 1] == 0xD9;
     }
-    return eoi && header_valid(jpeg, size);
+    return eoi && header_valid(jpeg, size, width, height);
 }
 
 /* 把第 STILL_TAKE_VALID_FRAME 张有效 JPEG 复制进 copy（容量 STILL_BUFFER_BYTES） */
@@ -443,7 +444,7 @@ static esp_err_t grab(still_t *s, uint8_t *copy, size_t *ret_size)
         ESP_RETURN_ON_ERROR(v4l2(s->fd, VIDIOC_DQBUF, &b, "DQBUF"), TAG, "dequeue");
         ESP_RETURN_ON_FALSE(b.index < s->count, ESP_FAIL, TAG, "bad buffer");
         const uint8_t *jpeg = s->buffers[b.index];
-        const bool ok = frame_valid(jpeg, b.bytesused);
+        const bool ok = frame_valid(jpeg, b.bytesused, s->width, s->height);
         if (!ok) {
             ESP_LOGW(TAG, "frame %d rejected (%u bytes)", i, (unsigned)b.bytesused);
         }
@@ -458,14 +459,14 @@ static esp_err_t grab(still_t *s, uint8_t *copy, size_t *ret_size)
     return ESP_ERR_TIMEOUT;
 }
 
-esp_err_t film_still_capture(film_still_t *ret)
+esp_err_t film_still_capture(uint16_t width, uint16_t height, film_still_t *ret)
 {
     const int64_t t0 = esp_timer_get_time();
     *ret = (film_still_t) { 0 };
     /* 开流前先拿到副本缓冲：采集缓冲会占掉大块连续 PSRAM */
     uint8_t *copy = heap_caps_malloc(STILL_BUFFER_BYTES, STILL_COPY_CAPS);
     ESP_RETURN_ON_FALSE(copy, ESP_ERR_NO_MEM, TAG, "still copy buffer");
-    still_t s = { .fd = -1 };
+    still_t s = { .fd = -1, .width = width, .height = height };
     esp_err_t err = still_open(&s);
     if (err == ESP_OK) {
         err = grab(&s, copy, &ret->size);

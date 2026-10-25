@@ -37,6 +37,8 @@
 #define SCREEN_PRINT_REF_TOP    78
 /* YUV420 成片分条带处理时每条带的行数（偶数） */
 #define STRIP_ROWS          32
+/* 存盘成片各边的对齐：硬件 JPEG 编码按 16×16 的 MCU 读取 */
+#define FULL_ALIGN          16
 /* 相纸边线向图像外侧最多伸出的像素数；YUV420 下按 2 的倍数取，保证条带矩形与色度块对齐 */
 #define EDGE_PAD            2
 /* 日期戳字号的参照：该短边的图像用原字号（M6 旧成片短边 1080，宝丽来旧图像 1024），更大的图像按比例放大 */
@@ -99,17 +101,38 @@ static bool rot_swaps(gfx_rot_t rot)
     return rot == GFX_ROT_90 || rot == GFX_ROT_270;
 }
 
+static int floor16(int v)
+{
+    return v & ~(FULL_ALIGN - 1);
+}
+
+/** 存盘成片的基准边（取景方向的图像宽），见 film_darkroom_job_t.full_edge */
+static int full_edge(const film_darkroom_job_t *job)
+{
+    if (job->full_edge == 0 || job->full_edge >= FILM_DARKROOM_M6_W) {
+        return FILM_DARKROOM_M6_W;
+    }
+    const int edge = floor16(job->full_edge);
+    return edge >= FULL_ALIGN ? edge : FULL_ALIGN;
+}
+
+/** 按基准边缩放一个标准尺寸（以 FILM_DARKROOM_M6_W 为基准），向下取 16 的倍数；基准边为标准时结果就是原值 */
+static int full_scaled(int standard, int edge)
+{
+    return floor16(standard * edge / FILM_DARKROOM_M6_W);
+}
+
 /** M6 在取景方向（转正之前）的图像尺寸：全画幅为 3:4 竖幅，4:3 裁切为横幅；屏幕图与取景画面同样的取景范围 */
 static void m6_scr_size(const film_darkroom_job_t *job, int *ret_w, int *ret_h)
 {
-    const bool small = job->size != FILM_DARKROOM_FULL;
-    if (job->crop_43) {
-        *ret_w = small ? FILM_DARKROOM_SCREEN_MAX_W : FILM_DARKROOM_M6_W;
-        *ret_h = small ? FILM_DARKROOM_SCREEN_MAX_H : FILM_DARKROOM_M6_H;
-    } else {
-        *ret_w = small ? FILM_DARKROOM_SCREEN_MAX_H : FILM_DARKROOM_M6_W;
-        *ret_h = small ? FILM_DARKROOM_SCREEN_MAX_W : FILM_DARKROOM_M6_FULL_H;
+    if (job->size != FILM_DARKROOM_FULL) {
+        *ret_w = job->crop_43 ? FILM_DARKROOM_SCREEN_MAX_W : FILM_DARKROOM_SCREEN_MAX_H;
+        *ret_h = job->crop_43 ? FILM_DARKROOM_SCREEN_MAX_H : FILM_DARKROOM_SCREEN_MAX_W;
+        return;
     }
+    const int edge = full_edge(job);
+    *ret_w = edge;
+    *ret_h = full_scaled(job->crop_43 ? FILM_DARKROOM_M6_H : FILM_DARKROOM_M6_FULL_H, edge);
 }
 
 static void make_layout(const film_darkroom_job_t *job, layout_t *l)
@@ -137,11 +160,13 @@ static void make_layout(const film_darkroom_job_t *job, layout_t *l)
             l->img_y = (int)lroundf(SCREEN_PRINT_REF_TOP * k);
             l->img_w = l->out_w - 2 * l->img_x;
         } else {
-            l->out_w = FILM_DARKROOM_PRINT_W;
-            l->out_h = FILM_DARKROOM_PRINT_H;
-            l->img_x = FILM_DARKROOM_PRINT_SIDE;
-            l->img_y = FILM_DARKROOM_PRINT_TOP;
-            l->img_w = FILM_DARKROOM_PRINT_IMAGE;
+            /* 标准基准边时正是 1712×2096、图像 1536、边距 88/118；更小的原片按比例缩小，位置取偶数 */
+            const int edge = full_edge(job);
+            l->out_w = full_scaled(FILM_DARKROOM_PRINT_W, edge);
+            l->out_h = full_scaled(FILM_DARKROOM_PRINT_H, edge);
+            l->img_w = full_scaled(FILM_DARKROOM_PRINT_IMAGE, edge);
+            l->img_x = ((l->out_w - l->img_w) / 2) & ~1;
+            l->img_y = (FILM_DARKROOM_PRINT_TOP * edge / FILM_DARKROOM_M6_W) & ~1;
         }
         l->img_h = l->img_w;
         l->scr_w = l->scr_h = l->img_w;
@@ -782,7 +807,9 @@ static void draw_stamp(const film_darkroom_job_t *job, const layout_t *l, const 
     /* 全分辨率成片的图像比旧版大，字号按短边放大，日期戳占画面的比例不变 */
     const int short_edge = l->img_w < l->img_h ? l->img_w : l->img_h;
     const int ref = job->instant ? STAMP_REF_SHORT_INSTANT : STAMP_REF_SHORT_M6;
-    const int k_q8 = full && short_edge > ref ? short_edge * 256 / ref : 256;
+    /* 小原片（full_edge）的成片也按短边缩小字号，否则日期戳占画面的比例会变大 */
+    const bool scaled = full && (short_edge > ref || full_edge(job) < FILM_DARKROOM_M6_W);
+    const int k_q8 = scaled ? short_edge * 256 / ref : 256;
     const int size_px = stamp_scale(full ? 60 : 20, k_q8);
     const int tracking = (int)lroundf(size_px * STAMP_TRACKING_EM);
     const int w = text_width(core, k_q8, job->stamp, tracking);

@@ -107,6 +107,8 @@ esp_err_t film_studio_process(const film_studio_config_t *config, const film_sho
         .rot = shot->rot,
         .stamp = stamp,
         .size = shot->preview_only ? FILM_DARKROOM_SCREEN : FILM_DARKROOM_FULL,
+        /* 原片按传感器方向横放，短边就是高 */
+        .full_edge = config->native_size ? source->height : 0,
         .progress = config->progress,
         .progress_ctx = config->progress_ctx,
         .match = config->match,

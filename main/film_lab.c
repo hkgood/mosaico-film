@@ -634,6 +634,7 @@ static esp_err_t run_job(film_lab_handle_t lab, job_t *job, uint16_t *screen, fi
             .darkroom = lab->darkroom, .root = root, .write_jpeg = write_jpeg, .write_preview = write_preview,
             .source_done = source_done, .ctx = &run, .progress = on_progress, .progress_ctx = &run,
             .match = job->proof_stats.valid ? &job->proof_stats : NULL,
+            .native_size = true,
         };
         err = film_studio_process(&studio, shot, &source, screen, result);
         if (err == ESP_OK) {

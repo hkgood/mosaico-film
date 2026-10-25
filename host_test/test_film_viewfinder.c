@@ -179,6 +179,55 @@ static void check_window_convert(void)
     free(b);
 }
 
+/** SC101IOT 的取景路径：1280×720 帧（带行尾填充）取居中 960×720 窗口，三种取景 × 四个握持方向都与标量参考逐位一致 */
+static void check_hd_window_frames(void)
+{
+    enum { HD_W = 1280, HD_H = 720 };
+    const size_t stride = HD_W * 2u + PAD_BYTES;
+    uint8_t *uyvy = malloc(stride * HD_H);
+    uint16_t *want = malloc(sizeof(uint16_t) * FILM_VF_M6_W * FILM_VF_M6_H);
+    uint16_t *got = malloc(sizeof(uint16_t) * FILM_VF_M6_W * FILM_VF_M6_H);
+    CHECK(uyvy && want && got);
+    uint32_t seed = 0x1280u;
+    for (size_t i = 0; i < stride * HD_H; ++i) {
+        seed = seed * 1664525u + 1013904223u;
+        uyvy[i] = (uint8_t)(seed >> 24);
+    }
+    const film_viewfinder_source_t full = { .uyvy = uyvy, .width = HD_W, .height = HD_H, .stride = stride };
+    const film_viewfinder_source_t win = vf_test_window_43(&full);
+    CHECK(win.width == 960 && win.height == HD_H && win.stride == stride);
+    for (int mode = 0; mode < 3; ++mode) {
+        const bool instant = mode == 0, crop_43 = mode == 1;
+        uint16_t vw, vh;
+        vf_test_size(instant, crop_43, &vw, &vh);
+        reference_convert(&win, instant, crop_43, want);
+        for (int rot = 0; rot < 4; ++rot) {
+            uint16_t uw, uh;
+            vf_test_size_rot(instant, crop_43, (gfx_rot_t)rot, &uw, &uh);
+            CHECK(vf_test_convert_rot_look(&win, instant, crop_43, (gfx_rot_t)rot, NULL, got) == ESP_OK);
+            for (int y = 0; y < vh; ++y) {
+                for (int x = 0; x < vw; ++x) {
+                    int u = x, v = y;
+                    switch (rot) {
+                    case GFX_ROT_90: u = y; v = vw - 1 - x; break;
+                    case GFX_ROT_180: u = vw - 1 - x; v = vh - 1 - y; break;
+                    case GFX_ROT_270: u = vh - 1 - y; v = x; break;
+                    default: break;
+                    }
+                    if (got[(size_t)v * uw + u] != want[(size_t)y * vw + x]) {
+                        fprintf(stderr, "hd mode %d rot %d: pixel (%d,%d) differs from the reference\n", mode, rot,
+                                x, y);
+                        exit(1);
+                    }
+                }
+            }
+        }
+    }
+    free(uyvy);
+    free(want);
+    free(got);
+}
+
 /* ---------------------------------------------------------------- 胶卷取景外观 */
 
 /** 标量参考：不用任何查表，直接按"色度缩放 → BT.601 → 曲线 → 截位"算一个像素 */
@@ -430,6 +479,7 @@ int main(void)
     check_frames();
     check_window_43();
     check_window_convert();
+    check_hd_window_frames();
     check_identity_look();
     check_look_frames();
     check_look_properties();

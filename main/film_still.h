@@ -1,5 +1,5 @@
 /*
- * film_still：在取景暂停期间，用原生 V4L2 从 OV3640 取一张 2048×1536 JPEG。
+ * film_still：在取景暂停期间，用原生 V4L2 从 OV3640 取一张 JPEG（尺寸由 film_capture_mode 选，OV3640 为 2048×1536）。
  *
  * 传感器切换格式时寄存器表会软复位，自动曝光从头收敛（约 1 秒）、模组的白平衡调校也被冲掉。
  * 这里把取景已收敛的曝光按行时间换算搬到拍照模式并锁定，重放白平衡调校，
@@ -24,9 +24,6 @@
 extern "C" {
 #endif
 
-#define FILM_STILL_WIDTH  2048
-#define FILM_STILL_HEIGHT 1536
-
 /** 拍照模式的手动白平衡增益 R、G、B（0x40 = 1.0） */
 typedef struct {
     uint8_t gain[3];
@@ -39,7 +36,7 @@ typedef struct {
     film_still_awb_t awb;       /*!< 这张所用的白平衡增益，冲洗后连同残差交回 film_still_learn_awb；全 0 表示没用手动白平衡 */
     /**
      * 传感器不出 JPEG（如 SC101IOT）：jpeg 为 NULL，快门帧就是 film_camera 交出的 proof（4:3 窗口的 UYVY），
-     * 暗房用硬件编码器把它编成 JPEG 原片。分辨率与取景相同，不如 OV3640 的 2048×1536。
+     * 暗房用硬件编码器把它编成 JPEG 原片。分辨率是取景格式的 4:3 窗口（SC101IOT 1280×720 时为 960×720）。
      */
     bool from_frame;
 } film_still_t;
@@ -47,14 +44,17 @@ typedef struct {
 /** 读出当前相机传感器的芯片 ID（pid）；相机的视频设备已注册、没有别的任务在用它时调用（相机任务） */
 esp_err_t film_still_sensor_pid(uint16_t *ret_pid);
 
-/** 这个传感器能不能出 2048×1536 的 JPEG（OV3640 可以，SC101IOT 只有 YUV） */
+/**
+ * 这个传感器的 JPEG 拍照通道能不能用：要能出 JPEG，还要有本模块会控制的曝光、白平衡寄存器（只有 OV3640）。
+ * 曝光读数（film_still_exposure_index）同样只在这时可用。SC101IOT 只有 YUV。
+ */
 bool film_still_sensor_has_jpeg(uint16_t pid);
 
 /** 传感器的短名字，用于日志与设置页的关于信息；认不出时返回 "UNKNOWN" */
 const char *film_still_sensor_name(uint16_t pid);
 
-/** 取一张快门帧；失败时 ret->jpeg 为 NULL */
-esp_err_t film_still_capture(film_still_t *ret);
+/** 取一张 width×height 的 JPEG 快门帧（传感器必须编进了这个 JPEG 格式）；失败时 ret->jpeg 为 NULL */
+esp_err_t film_still_capture(uint16_t width, uint16_t height, film_still_t *ret);
 
 /** film_still_exposure_index 的单位：曝光正好一帧、增益 1 倍 */
 #define FILM_STILL_EXPOSURE_UNIT 16u

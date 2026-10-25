@@ -5,8 +5,11 @@
  *   取景方向的第 y 行 ← 传感器第 col(y) 列（从裁切块右边往左）
  *
  * 即传感器画面逆时针转 90°。取景帧按行写入时，同一行相邻像素来自不同的传感器行，
- * 直接逐像素读会在 PSRAM 上跳行；所以按 TILE_ROWS 行一组处理：
- * 组内每一列只读传感器一行里相邻的几十个字节，写入的几行取景缓冲也都留在缓存里。
+ * 直接逐像素读会在 PSRAM 上跳行；所以按 TILE_COLS 列（= TILE_COLS 个传感器行）一组处理：
+ * 组内对每个 y 读这几行同一列附近的字节，y 增加时各行都顺序往右走，每条缓存行只从 PSRAM 读一次；
+ * 写入是取景缓冲里连续的 TILE_COLS 个像素（转 90°/270° 时是 TILE_COLS 行各自顺序写）。
+ * 不能反过来让一组扫遍全部传感器行：1280 宽的帧行距 2560 字节，几百行同时在用会在缓存组上冲突，
+ * 几乎每次采样都要等 PSRAM（实测 960×720 窗口一帧 256 ms）。
  */
 #include "film_viewfinder.h"
 
@@ -21,7 +24,7 @@
 #define LUT_ATTR
 #endif
 
-#define TILE_ROWS 16    /*!< 每组取景行数；列偏移表 2×16×2 字节，放在栈上也只有 64 字节 */
+#define TILE_COLS 32    /*!< 每组取景列数：转正时一组写满一条 64 字节缓存行；行号表放栈上 64 字节 */
 
 /*
  * RGB565 查表：BT.601 每个分量 (c + 色度项) >> 8 都落在 [-277, 534]（B 分量最宽），
@@ -153,47 +156,45 @@ static inline __attribute__((always_inline)) esp_err_t convert_impl(const film_v
                                        : src->width;
     const uint32_t crop_x0 = (src->width - block_w) / 2u;
 
-    for (uint32_t y0 = 0; y0 < vh; y0 += TILE_ROWS) {
-        const uint32_t rows = vh - y0 < TILE_ROWS ? vh - y0 : TILE_ROWS;
-        uint16_t pair_ofs[TILE_ROWS];   /*!< 该取景行对应传感器列所在 UYVY 像素对的字节偏移 */
-        uint16_t luma_ofs[TILE_ROWS];   /*!< 该列 Y 分量的字节偏移 */
-        for (uint32_t t = 0; t < rows; ++t) {
-            const uint32_t y = y0 + t;
-            const uint32_t col = crop_x0 + block_w - 1u - ((2u * y + 1u) * block_w) / (2u * vh);
-            pair_ofs[t] = (uint16_t)((col >> 1) * 4u);
-            luma_ofs[t] = (uint16_t)(pair_ofs[t] + 1u + (col & 1u) * 2u);
+    for (uint32_t x0 = 0; x0 < vw; x0 += TILE_COLS) {
+        const uint32_t cols = vw - x0 < TILE_COLS ? vw - x0 : TILE_COLS;
+        uint16_t rows[TILE_COLS];   /*!< 该组每个取景列对应的传感器行 */
+        for (uint32_t k = 0; k < cols; ++k) {
+            rows[k] = (uint16_t)(((2u * (x0 + k) + 1u) * block_h) / (2u * vw));
         }
-        for (uint32_t x = 0; x < vw; ++x) {
-            const uint32_t row = ((2u * x + 1u) * block_h) / (2u * vw);
-            const uint8_t *line = src->uyvy + (size_t)row * stride;
+        for (uint32_t y = 0; y < vh; ++y) {
+            const uint32_t col = crop_x0 + block_w - 1u - ((2u * y + 1u) * block_w) / (2u * vh);
+            const uint32_t pair_ofs = (col >> 1) * 4u;   /*!< 该列所在 UYVY 像素对的字节偏移 */
+            const uint32_t luma_ofs = pair_ofs + 1u + (col & 1u) * 2u;
             /*
              * 取景方向的像素 (x, y) 按握持方向转正后的位置（用户坐标 u 向右、v 向下，规则同 ui_unrot_vec）：
              *   0°: (x, y)  90°: (y, vw-1-x)  180°: (vw-1-x, vh-1-y)  270°: (vh-1-y, x)
-             * 同一组里 y 每加 1，输出下标走 dst_step：0° +uw、90° +1、180° -uw、270° -1，都在缓存里。
+             * 同一组里 x 每加 1，输出下标走 dst_step：0° +1、90° -vh、180° -1、270° +vh。
              */
             uint16_t *dst;
             ptrdiff_t dst_step;
             switch (rot) {
             case GFX_ROT_90:
-                dst = out + (size_t)(vw - 1u - x) * vh + y0;
-                dst_step = 1;
+                dst = out + (size_t)(vw - 1u - x0) * vh + y;
+                dst_step = -(ptrdiff_t)vh;
                 break;
             case GFX_ROT_180:
-                dst = out + (size_t)(vh - 1u - y0) * vw + (vw - 1u - x);
-                dst_step = -(ptrdiff_t)vw;
-                break;
-            case GFX_ROT_270:
-                dst = out + (size_t)x * vh + (vh - 1u - y0);
+                dst = out + (size_t)(vh - 1u - y) * vw + (vw - 1u - x0);
                 dst_step = -1;
                 break;
+            case GFX_ROT_270:
+                dst = out + (size_t)x0 * vh + (vh - 1u - y);
+                dst_step = (ptrdiff_t)vh;
+                break;
             default:
-                dst = out + (size_t)y0 * vw + x;
-                dst_step = (ptrdiff_t)vw;
+                dst = out + (size_t)y * vw + x0;
+                dst_step = 1;
                 break;
             }
-            for (uint32_t t = 0; t < rows; ++t) {
-                const uint8_t *pair = line + pair_ofs[t];
-                const int luma = line[luma_ofs[t]];
+            for (uint32_t k = 0; k < cols; ++k) {
+                const uint8_t *line = src->uyvy + (size_t)rows[k] * stride;
+                const uint8_t *pair = line + pair_ofs;
+                const int luma = line[luma_ofs];
                 if (mode == VF_MONO) {
                     *dst = look->gray565[luma];
                 } else if (mode == VF_LOOK) {

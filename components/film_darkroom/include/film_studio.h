@@ -47,6 +47,11 @@ typedef struct {
     /** 可选：把原片校正到这组均值（拍摄时传小样的统计），为 NULL 时沿用 shot->balance */
     const film_tone_stats_t *match;
     film_tone_stats_t *ret_stats;   /*!< 可选：输出原片校正前的均值（小样冲洗时取回） */
+    /**
+     * 原片比标准成片小（SC101IOT 的 960×720）时成片按原片 1:1 输出、不放大（film_darkroom_job_t.full_edge）。
+     * 设备打开；PC 模拟器的样片代表 OV3640 原片，保持标准尺寸。
+     */
+    bool native_size;
 } film_studio_config_t;
 
 typedef struct {

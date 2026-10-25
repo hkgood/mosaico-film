@@ -8,7 +8,9 @@
 #include "bsp/esp_mosaico.h"
 #include "esp_check.h"
 #include "esp_app_desc.h"
+#include "esp_gsp_esp_lcd.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "film_camera.h"
 #include "film_display.h"
@@ -48,6 +50,7 @@ static const char *TAG = "film_port";
 #define ACCEL_READ_ATTEMPTS 3
 #define ACCEL_MIN_VALID_G2  0.04f       /*!< |a| < 0.2 g 视为传感器尚未出数 */
 #define TIME_VALID_AFTER    1735689600  /*!< 2025-01-01：早于此说明时钟没校过 */
+#define SHUTDOWN_UI_PAUSE_MS 200        /*!< 重启前等最后一帧传完；一帧整屏约 61 ms */
 
 /*
  * BMI270 读数 → 屏幕坐标里的重力方向（x 向右、y 向下、z 朝外）。
@@ -102,6 +105,12 @@ static bool dev_camera_ready(void *ctx)
 {
     film_port_dev_handle_t p = ctx;
     return p->camera && film_camera_ready(p->camera);
+}
+
+static bool dev_preview_stalled(void *ctx)
+{
+    film_port_dev_handle_t p = ctx;
+    return p->camera && film_camera_preview_stalled(p->camera);
 }
 
 static void dev_preview_pause(void *ctx, bool paused)
@@ -363,6 +372,35 @@ static void start_imu(film_port_dev_handle_t p)
     }
 }
 
+/* ---------------------------------------------------------------- 软重启 */
+
+/*
+ * esp_restart() 不会停下进行中的 DMA：取景流或屏幕传输带进下一次启动，会出现相机一帧不出。
+ * BSP 相机文档要求重启前停止取帧、等 PPA/LCD 完成、关流。重启由 ESP-Iris 发起（进 Vibe Mode、
+ * OTA、远程重启），所以挂在 shutdown handler 上。handler 没有参数：端口只创建一次，
+ * create 末尾写入后只读。每一步都有超时，最坏只让重启晚约 1.7 s。panic 重启不经过这里。
+ */
+static film_port_dev_handle_t s_shutdown_port;
+
+static void quiesce_before_restart(void)
+{
+    film_port_dev_handle_t p = s_shutdown_port;
+    if (!p) {
+        return;
+    }
+    if (p->camera) {
+        film_camera_hold_preview(p->camera, true);   /* 关流（取景转换里的 PPA 随之结束），最多等 1.5 s */
+    }
+    if (p->config.gsp) {
+        esp_gsp_esp_lcd_pause_t *pause = NULL;   /* 不再恢复：令牌随重启丢弃 */
+        const esp_err_t err = esp_gsp_esp_lcd_pause(p->config.gsp, SHUTDOWN_UI_PAUSE_MS, &pause);
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {   /* INVALID_STATE：调亮度时已经停着 */
+            ESP_LOGW(TAG, "restart: UI did not pause: %s", esp_err_to_name(err));
+        }
+    }
+    ESP_LOGI(TAG, "restart: camera and display quiesced");
+}
+
 esp_err_t film_port_dev_create(const film_port_dev_config_t *config, film_port_dev_handle_t *ret_handle)
 {
     ESP_RETURN_ON_FALSE(config && ret_handle, ESP_ERR_INVALID_ARG, TAG, "bad args");
@@ -424,6 +462,7 @@ esp_err_t film_port_dev_create(const film_port_dev_config_t *config, film_port_d
         .preview_release = dev_preview_release,
         .preview_config = dev_preview_config,
         .camera_ready = dev_camera_ready,
+        .preview_stalled = dev_preview_stalled,
         .preview_pause = dev_preview_pause,
         .shoot = dev_shoot,
         .redevelop = dev_redevelop,
@@ -445,6 +484,10 @@ esp_err_t film_port_dev_create(const film_port_dev_config_t *config, film_port_d
         .set_display = dev_set_display,
         .keep_awake = dev_keep_awake,
     };
+    s_shutdown_port = p;
+    if (esp_register_shutdown_handler(quiesce_before_restart) != ESP_OK) {
+        ESP_LOGW(TAG, "restart quiesce unavailable");   /* 只影响软重启后的相机，不影响运行 */
+    }
     *ret_handle = p;
     return ESP_OK;
 }

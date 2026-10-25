@@ -396,6 +396,7 @@ struct film_app_t {
     const film_frame_t *frame;
     uint32_t frame_seq;
     bool camera_ok;
+    bool camera_stalled;        /*!< 相机在线却不出帧：取景框显示提示而不是手里那张旧帧 */
     bool storage_ok;
     int shots_left;             /*!< 按剩余空间估算还能拍几张，-1 表示未知 */
     bool preview_paused;        /*!< 已请求平台暂停取景转换（机身选择面板打开期间画面定格） */

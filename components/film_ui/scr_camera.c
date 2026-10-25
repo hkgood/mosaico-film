@@ -26,6 +26,7 @@
 #define FILM_ANIM_MS         90.0f
 #define LIGHT_LEAK_CHANCE    3       /*!< 约三分之一的照片带随机漏光 */
 #define LEVEL_TOLERANCE_DEG  1.5f
+#define STALL_LINE_GAP       20      /*!< 取景框"相机没有出图"两行提示的行距（13 px 字） */
 #define SHUTTER_HIT_R        46
 #define COUNTER_HIT_R        34
 /*
@@ -271,14 +272,20 @@ void cam_fire(film_app_t *app)
 void cam_draw_live(film_app_t *app, gfx_canvas_t *c, gfx_rect_t dst)
 {
     const film_frame_t *f = app->frame;
-    if (!app->camera_ok || !f) {
+    if (!app->camera_ok || app->camera_stalled || !f) {
         gfx_fill(c, dst, 0x0B0B0A, 255);
+        const ui_frame_t uf = ui_frame(dst, app->rot);
+        const gfx_text_style_t st = ui_cjk(&font_noto_13, COLOR_MUTED, 255, GFX_ALIGN_CENTER, app->rot);
+        int x, y;
         if (!app->camera_ok) {
-            const ui_frame_t uf = ui_frame(dst, app->rot);
-            const gfx_text_style_t st = ui_cjk(&font_noto_13, COLOR_MUTED, 255, GFX_ALIGN_CENTER, app->rot);
-            int x, y;
             ui_point(&uf, uf.w / 2, uf.h / 2, &x, &y);
             gfx_text(c, &st, x, y, "相机未连接");
+        } else if (app->camera_stalled) {
+            /* 只用字体子集里已有的字：新字要重新生成 assets.bin */
+            ui_point(&uf, uf.w / 2, uf.h / 2 - STALL_LINE_GAP / 2, &x, &y);
+            gfx_text(c, &st, x, y, "相机没有出图");
+            ui_point(&uf, uf.w / 2, uf.h / 2 + STALL_LINE_GAP / 2, &x, &y);
+            gfx_text(c, &st, x, y, "请重新连接相机");
         }
         return;
     }

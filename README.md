@@ -93,7 +93,8 @@ Mosaico Film 把 ESP-Mosaico 变成一台有取景器、快门、胶卷和暗房
 **硬件**
 
 - ESP-Mosaico 主板（ESP32-S31，16 MB Flash）
-- 安装在左侧扩展位的 OV3640 相机模块
+- 安装在左侧扩展位的 OV3640 或 SC101IOT 相机模块（自动选择最合适的取景与成片分辨率）
+- 当前源码基于 Vibe Mode 0.2；仍是 0.1 的设备先运行 `python mosaico.py recover`
 
 **在线烧录（推荐）**
 

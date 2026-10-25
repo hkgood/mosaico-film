@@ -93,7 +93,8 @@ The viewfinder uses a fast preview path; final photos use the complete developme
 **Hardware**
 
 - ESP-Mosaico board (ESP32-S31, 16 MB flash)
-- OV3640 camera module in the left expansion slot
+- OV3640 or SC101IOT camera module in the left expansion slot (the viewfinder and photo resolution are chosen automatically)
+- The current source targets Vibe Mode 0.2; run `python mosaico.py recover` first on devices still on 0.1
 
 **Web installer (recommended)**
 

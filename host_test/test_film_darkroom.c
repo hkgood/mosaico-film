@@ -425,6 +425,75 @@ static void test_exact_pixels(film_darkroom_handle_t dr, film_darkroom_handle_t 
     }
 }
 
+/**
+ * 小原片（SC101IOT：1280×720 取景帧的 960×720 窗口）设了 full_edge 时，成片按原片 1:1 输出，不放大到 1536；
+ * 相纸按比例缩小且各边是 16 的倍数，YUV420 存放也能冲。
+ */
+static void test_native_edge(film_darkroom_handle_t dr, film_darkroom_handle_t dr_yuv)
+{
+    ppm_image_t sensor = { .width = 960, .height = 720 };
+    sensor.pixels = malloc((size_t)sensor.width * sensor.height * 3);
+    CHECK(sensor.pixels);
+    for (int y = 0; y < sensor.height; ++y) {
+        for (int x = 0; x < sensor.width; ++x) {
+            uint8_t *p = sensor.pixels + ((size_t)y * sensor.width + x) * 3;
+            p[0] = (uint8_t)(x * 7 + y * 3);
+            p[1] = (uint8_t)((x * 5) ^ y);
+            p[2] = (uint8_t)(x * 13 + y * 11 + (x >> 3));
+        }
+    }
+    int w, h;
+    film_darkroom_job_t job = { .film = FILM_ID_COUNT, .size = FILM_DARKROOM_FULL, .full_edge = 720 };
+    film_darkroom_output_size(&job, &w, &h);
+    CHECK(w == 720 && h == 960);
+    job.rot = GFX_ROT_90;
+    film_darkroom_output_size(&job, &w, &h);
+    CHECK(w == 960 && h == 720);
+    job.rot = GFX_ROT_0;
+    job.crop_43 = true;
+    film_darkroom_output_size(&job, &w, &h);
+    CHECK(w == 720 && h == 528);            /* 540 向下取 16 的倍数 */
+    job.crop_43 = false;
+    job.instant = true;
+    film_darkroom_output_size(&job, &w, &h);
+    CHECK(w == 800 && h == 976);
+    job.full_edge = 2000;                   /* 不比标准大：照旧 */
+    film_darkroom_output_size(&job, &w, &h);
+    CHECK(w == FILM_DARKROOM_PRINT_W && h == FILM_DARKROOM_PRINT_H);
+
+    /* 全画幅 1:1：每个像素都是原片的像素 */
+    for (int rot = 0; rot < 4; ++rot) {
+        const film_darkroom_job_t m6 = { .film = FILM_ID_COUNT, .rot = (gfx_rot_t)rot, .full_edge = 720 };
+        film_darkroom_image_t img = develop(dr, &sensor, m6, 24);
+        CHECK(img.width * img.height == 720 * 960);
+        uint8_t *row = malloc((size_t)img.width * 3);
+        CHECK(row);
+        int mismatches = 0;
+        for (int y = 0; y < img.height; ++y) {
+            CHECK(film_darkroom_image_get_rgb(&img, 0, y, img.width, 1, row, (size_t)img.width * 3) == 0);
+            for (int x = 0; x < img.width; ++x) {
+                int sx, sy;
+                expected_source(rot, false, sensor.width, sensor.height, x, y, &sx, &sy);
+                mismatches += memcmp(row + x * 3, sensor.pixels + ((size_t)sy * sensor.width + sx) * 3, 3) != 0;
+            }
+        }
+        CHECK(mismatches == 0);
+        free(row);
+        film_darkroom_release(dr, &img);
+    }
+
+    /* 宝丽来与 4:3 裁切在 YUV420 存放下也能冲（版式边界全是偶数） */
+    const film_darkroom_job_t sx = { .film = FILM_ID_GOLD, .instant = true, .full_edge = 720, .stamp = "'26 10 25" };
+    film_darkroom_image_t print = develop(dr_yuv, &sensor, sx, 16);
+    CHECK(print.width == 800 && print.height == 976);
+    film_darkroom_release(dr_yuv, &print);
+    const film_darkroom_job_t crop = { .film = FILM_ID_GOLD, .crop_43 = true, .full_edge = 720, .stamp = "'26 10 25" };
+    film_darkroom_image_t cropped = develop(dr_yuv, &sensor, crop, 16);
+    CHECK(cropped.width == 720 && cropped.height == 528);
+    film_darkroom_release(dr_yuv, &cropped);
+    free(sensor.pixels);
+}
+
 /** 2 倍放大（最近邻），把 1024×768 的样片变成 2048×1536 的传感器图 */
 static ppm_image_t upscale2x(const ppm_image_t *in)
 {
@@ -622,6 +691,7 @@ int main(int argc, char **argv)
     CHECK(ppm_read(FILM_TEST_SENSOR, &sample));
     test_reused_strip(dr, &sample);
     test_exact_pixels(dr, dr_yuv);
+    test_native_edge(dr, dr_yuv);
     test_yuv_matches_rgb(dr, dr_yuv, &sample);
     test_balance_code();
     test_balance_match(dr, &sample);

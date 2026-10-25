@@ -121,6 +121,16 @@ target_link_libraries(film_viewfinder_test PRIVATE film_darkroom)
 target_compile_options(film_viewfinder_test PRIVATE -Wall -Wextra -Werror -O2)
 add_test(NAME film_viewfinder_test COMMAND film_viewfinder_test)
 
+# 相机格式规划：两块相机板的格式表与 PSRAM 余量 → 取景格式、缓冲个数、拍照来源
+add_library(film_capture_mode STATIC "${COMPONENTS_DIR}/film_capture_mode/film_capture_mode.c")
+target_include_directories(film_capture_mode PUBLIC "${COMPONENTS_DIR}/film_capture_mode/include")
+target_compile_options(film_capture_mode PRIVATE -Wall -Wextra -Werror -Wshadow -Wconversion -Wno-sign-conversion)
+
+add_executable(film_capture_mode_test test_film_capture_mode.c)
+target_link_libraries(film_capture_mode_test PRIVATE film_capture_mode film_darkroom)
+target_compile_options(film_capture_mode_test PRIVATE -Wall -Wextra -Werror)
+add_test(NAME film_capture_mode_test COMMAND film_capture_mode_test)
+
 add_executable(film_library_test test_film_library.c)
 target_link_libraries(film_library_test PRIVATE film_ui)
 target_compile_options(film_library_test PRIVATE -Wall -Wextra -Werror)

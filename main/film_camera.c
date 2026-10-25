@@ -9,8 +9,10 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "film_capture_mode.h"
 #include "film_filter.h"
 #include "film_perf.h"
+#include "film_sensor.h"
 #include "film_still.h"
 #include "film_viewfinder.h"
 #include "freertos/FreeRTOS.h"
@@ -23,9 +25,8 @@ static const char *TAG = "film_camera";
 
 #define CAMERA_TASK_STACK        10240   /*!< 拍照路径（取帧校验、传感器切换、on_still 回调）在这个任务里跑，6 KB 余量不明 */
 #define FILM_CAMERA_STATUS_LEN   48
-#define SENSOR_WIDTH             640
-#define SENSOR_HEIGHT            480
 #define FRAME_TIMEOUT_MS         1000
+#define PREVIEW_DEFAULT_BUFFERS  2        /*!< 创建 BSP 相机时的取景缓冲个数；film_capture_mode 选了别的个数就重建一次 */
 #define RETRY_DELAY_MS           2000     /*!< 相机缺失时多久重新探测一次（支持热插拔） */
 #define RETRY_DELAY_MAX_MS       8000     /*!< 连续失败时退避的上限，避免反复初始化拖垮 SCCB 总线 */
 #define MAX_FRAME_ERRORS         5        /*!< 连续取帧失败这么多次视为相机被拔掉 */
@@ -38,12 +39,23 @@ static const char *TAG = "film_camera";
  */
 #define PAUSE_STREAM_OFF_US      (3 * 1000 * 1000)
 #define PAUSED_POLL_MS           1000     /*!< 关流暂停期间的兜底唤醒（恢复时会被立即叫醒） */
+/*
+ * 流开着却这么久没取到一帧，界面就提示相机没有出图（模块接触不良时 SCCB 正常、一帧不出）。
+ * 开流到第一帧不到 1 s；连续 MAX_FRAME_ERRORS 次超时后才会断开重连，这期间别让界面停在旧帧上。
+ */
+#define PREVIEW_STALL_US         (2 * 1000 * 1000)
 #define STATS_INTERVAL_US        (10 * 1000 * 1000)
 /*
  * 自动闪光（film_still_exposure_index，16 = 一帧满曝光、1 倍增益）：曝光已经拉满一帧、增益到 4 倍还不够才点灯。
  * 初值，按真机暗光实拍再调；每次拍照的日志里都有这次的读数。
  */
 #define FLASH_FIRE_INDEX         (4u * FILM_STILL_EXPOSURE_UNIT)
+/*
+ * 没有曝光寄存器可读的传感器（SC101IOT）改看取景帧 4:3 窗口的平均亮度（Y，16–235）：
+ * 自动曝光已经补不上来、画面仍然这么暗才点灯。初值，按真机暗光实拍再调。
+ */
+#define FLASH_FIRE_LUMA          40u
+#define LUMA_SAMPLE_STEP         16       /*!< 测亮度时横竖每隔这么多像素取一个（偶数：落在 UYVY 的 Y0 上） */
 /* 点灯后等取景的自动曝光在灯光下收敛：至少这么多帧，前后两帧读数相差不到 1/8 就算稳了，最多等这么久 */
 #define FLASH_SETTLE_MIN_FRAMES  3
 #define FLASH_SETTLE_MAX_US      (600 * 1000)
@@ -51,13 +63,6 @@ static const char *TAG = "film_camera";
 #define SLOT_PIXELS              (FILM_VF_M6_W * FILM_VF_M6_H)
 #define BUFFER_CAPS              (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 #define BUFFER_ALIGN             64
-
-/* 取景分辨率的尝试顺序：先 640×480（取景最省 CPU；OV3640 与 SC101IOT 的 Kconfig 都开了这一档），
- * 不支持再用传感器默认分辨率（0×0），比如只编进 SC101IOT 1280×720 的固件。 */
-static const struct {
-    uint32_t width;
-    uint32_t height;
-} k_modes[] = { { SENSOR_WIDTH, SENSOR_HEIGHT }, { 0, 0 } };
 
 typedef struct {
     film_frame_t frame;
@@ -78,6 +83,7 @@ struct film_camera_t {
     bool paused;                /*!< 界面暂时不要新帧：取帧后直接归还，不转换 */
     bool capture_pending;
     bool capturing;
+    int64_t frame_wait_since;   /*!< 开流或上一次取到帧的时刻；0 表示没在取景（流关着） */
     film_shot_t pending;
     int8_t ready_slot;          /*!< 待取的最新帧，-1 表示没有 */
     uint8_t held_mask;          /*!< 界面正在用的帧 */
@@ -88,7 +94,11 @@ struct film_camera_t {
 
     /* 以下只在相机任务里使用 */
     mosaico_camera_handle_t camera;
-    bool jpeg_still;            /*!< 传感器能出 JPEG：拍照走 film_still；否则用取景同款的 UYVY 帧 */
+    film_capture_mode_t modes[FILM_CAPTURE_MODE_MAX];   /*!< 连接时枚举到的传感器格式（film_capture_mode 的输入） */
+    bool jpeg_still;            /*!< 拍照走 film_still 的 JPEG；否则快门帧就是取景同款的 UYVY 帧 */
+    bool exposure_meter;        /*!< 能读曝光寄存器（OV3640）：自动闪光看曝光读数，否则看取景帧亮度 */
+    uint16_t still_width;       /*!< jpeg_still 时的 JPEG 尺寸 */
+    uint16_t still_height;
     bool streaming;
     int64_t paused_since;       /*!< 界面开始暂停取景的时刻，0 表示没暂停 */
     uint32_t stat_frames;
@@ -181,6 +191,25 @@ bool film_camera_ready(film_camera_handle_t cam)
     return ready;
 }
 
+/** 暂停或拍照结束、重新开始要帧时从现在起计时（持有 lock 调用） */
+static void restart_stall_clock(film_camera_handle_t cam)
+{
+    if (cam->frame_wait_since != 0) {
+        cam->frame_wait_since = esp_timer_get_time();
+    }
+}
+
+bool film_camera_preview_stalled(film_camera_handle_t cam)
+{
+    xSemaphoreTake(cam->lock, portMAX_DELAY);
+    /* 拍照、暂停取景期间本来就不出新帧，不算 */
+    const bool expecting = cam->ready && !cam->hold && !cam->paused && !cam->capturing && !cam->capture_pending &&
+                           cam->frame_wait_since != 0;
+    const int64_t since = cam->frame_wait_since;
+    xSemaphoreGive(cam->lock);
+    return expecting && esp_timer_get_time() - since >= PREVIEW_STALL_US;
+}
+
 void film_camera_set_preview(film_camera_handle_t cam, const film_preview_config_t *config)
 {
     xSemaphoreTake(cam->lock, portMAX_DELAY);
@@ -195,6 +224,9 @@ void film_camera_hold_preview(film_camera_handle_t cam, bool hold)
     xSemaphoreTake(cam->lock, portMAX_DELAY);
     cam->hold = hold;
     const bool wait = hold && cam->ready;   /* 没有相机就没有流要关 */
+    if (!hold) {
+        restart_stall_clock(cam);
+    }
     xSemaphoreGive(cam->lock);
     xTaskNotifyGive(cam->task);
     if (wait && xSemaphoreTake(cam->stopped, pdMS_TO_TICKS(HOLD_WAIT_MS)) != pdTRUE) {
@@ -207,6 +239,9 @@ void film_camera_pause_preview(film_camera_handle_t cam, bool paused)
     xSemaphoreTake(cam->lock, portMAX_DELAY);
     const bool changed = cam->paused != paused;
     cam->paused = paused;
+    if (changed && !paused) {
+        restart_stall_clock(cam);
+    }
     xSemaphoreGive(cam->lock);
     if (changed && !paused) {
         xTaskNotifyGive(cam->task);   /* 流可能已经关了：叫醒相机任务立刻重开 */
@@ -247,6 +282,14 @@ static void set_ready(film_camera_handle_t cam, bool ready)
     xSemaphoreGive(cam->lock);
 }
 
+/** 记下"从现在起等下一帧"：开流时与每取到一帧时调用；when 为 0 表示流已关、不再等帧 */
+static void set_frame_wait(film_camera_handle_t cam, int64_t when)
+{
+    xSemaphoreTake(cam->lock, portMAX_DELAY);
+    cam->frame_wait_since = when;
+    xSemaphoreGive(cam->lock);
+}
+
 static esp_err_t stream_start(film_camera_handle_t cam)
 {
     const size_t free_before = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
@@ -257,6 +300,7 @@ static esp_err_t stream_start(film_camera_handle_t cam)
         return err;
     }
     cam->streaming = true;
+    set_frame_wait(cam, esp_timer_get_time());
     mosaico_camera_info_t info = { 0 };
     (void)mosaico_camera_get_info(cam->camera, &info);
     ESP_LOGI(TAG, "stream PSRAM %u KB (%u buffers x %u KB)",
@@ -271,6 +315,7 @@ static void stream_stop(film_camera_handle_t cam)
         (void)mosaico_camera_stop_stream(cam->camera);
         (void)mosaico_camera_close(cam->camera);
         cam->streaming = false;
+        set_frame_wait(cam, 0);
     }
 }
 
@@ -332,35 +377,96 @@ static void diagnose_failure(film_camera_handle_t cam, esp_err_t err)
     set_status(cam, text);
 }
 
-/** 以指定分辨率注册并开流一次；任何一步失败都会撤销，返回失败原因 */
-static esp_err_t attach_once(film_camera_handle_t cam, uint32_t width, uint32_t height, bool allow_unidentified)
+/** 注册 BSP 相机：0×0 表示沿用传感器当前格式（Kconfig 默认，或 film_sensor 切好的格式） */
+static esp_err_t camera_new(film_camera_handle_t cam, bool allow_unidentified, uint8_t buffers)
 {
     mosaico_camera_config_t config = MOSAICO_CAMERA_DEFAULT_CONFIG();
-    config.width = width;
-    config.height = height;
+    config.width = 0;
+    config.height = 0;
+    config.buffer_count = buffers;
     config.frame_timeout_ms = FRAME_TIMEOUT_MS;
     config.allow_unidentified = allow_unidentified;
-    ESP_RETURN_ON_ERROR(mosaico_camera_new(&config, &cam->camera), TAG, "camera new");
-    /* 视频设备已注册、还没开流：此时读传感器型号，决定拍照走 JPEG 还是 YUV 帧 */
+    return mosaico_camera_new(&config, &cam->camera);
+}
+
+/** 枚举传感器格式，按此刻（开流之前）的 PSRAM 余量选取景格式、缓冲个数与拍照来源 */
+static void plan_capture(film_camera_handle_t cam, uint16_t pid, film_capture_plan_t *plan)
+{
+    size_t count = 0;
+    if (film_sensor_list_modes(cam->modes, FILM_CAPTURE_MODE_MAX, &count) != ESP_OK) {
+        count = 0;
+    }
+    const film_capture_env_t env = {
+        .jpeg_still = film_still_sensor_has_jpeg(pid),
+        .psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+        .psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM),
+    };
+    film_capture_mode_plan(cam->modes, count, &env, plan);
+    ESP_LOGI(TAG, "capture plan: %u modes, PSRAM free %u KB (largest %u KB) -> preview mode %d x%u buffers, "
+             "still %s %ux%u", (unsigned)count, (unsigned)(env.psram_free / 1024), (unsigned)(env.psram_largest / 1024),
+             plan->preview, (unsigned)plan->buffers, plan->still >= 0 ? "JPEG" : "frame", (unsigned)plan->photo_width,
+             (unsigned)plan->photo_height);
+}
+
+/**
+ * 注册并开流一次；任何一步失败都会撤销，返回失败原因。
+ * use_plan 为 false 时不切格式、用默认缓冲个数（选定格式开不起来时的退路）；拍照来源照样按传感器能力定。
+ */
+static esp_err_t attach_once(film_camera_handle_t cam, bool allow_unidentified, bool use_plan)
+{
+    ESP_RETURN_ON_ERROR(camera_new(cam, allow_unidentified, PREVIEW_DEFAULT_BUFFERS), TAG, "camera new");
+    /* 视频设备已注册、还没开流：此时读传感器型号与格式表，决定取景格式和拍照走 JPEG 还是 YUV 帧 */
     uint16_t pid = 0;
     if (film_still_sensor_pid(&pid) != ESP_OK) {
         pid = 0;
     }
-    const esp_err_t err = stream_start(cam);
-    if (err != ESP_OK) {
+    film_capture_plan_t plan;
+    plan_capture(cam, pid, &plan);
+    if (!use_plan) {
+        plan.preview = -1;
+        plan.buffers = PREVIEW_DEFAULT_BUFFERS;
+    }
+    esp_err_t err = ESP_OK;
+    if (plan.buffers != PREVIEW_DEFAULT_BUFFERS) {
+        /* BSP 相机只在创建时接受缓冲个数：重建一次（传感器回到 Kconfig 默认格式，下面再切） */
         (void)mosaico_camera_del(cam->camera);
         cam->camera = NULL;
+        err = camera_new(cam, allow_unidentified, plan.buffers);
+    }
+    if (err == ESP_OK && plan.preview >= 0) {
+        err = film_sensor_apply_mode((size_t)plan.preview);
+    }
+    if (err == ESP_OK) {
+        err = stream_start(cam);
+    }
+    if (err != ESP_OK) {
+        if (cam->camera) {
+            (void)mosaico_camera_del(cam->camera);
+            cam->camera = NULL;
+        }
         return err;
     }
-    cam->jpeg_still = film_still_sensor_has_jpeg(pid);
+    cam->jpeg_still = plan.still >= 0;
+    cam->exposure_meter = film_still_sensor_has_jpeg(pid);
     mosaico_camera_info_t info = { 0 };
     (void)mosaico_camera_get_info(cam->camera, &info);
-    ESP_LOGI(TAG, "camera ready: %s (pid 0x%04x) %lux%lu @%lu fps, still via %s%s", film_still_sensor_name(pid), pid,
-             (unsigned long)info.width, (unsigned long)info.height, (unsigned long)info.frame_rate,
-             cam->jpeg_still ? "JPEG" : "viewfinder frame", allow_unidentified ? ", unidentified board" : "");
+    uint16_t photo_w = plan.photo_width, photo_h = plan.photo_height;
+    if (cam->jpeg_still) {
+        cam->still_width = cam->modes[plan.still].width;
+        cam->still_height = cam->modes[plan.still].height;
+    } else {
+        /* 快门帧就是取景帧：原片是实际取景格式的 4:3 窗口（退路时与规划的不同） */
+        film_capture_mode_window((uint16_t)info.width, (uint16_t)info.height, &photo_w, &photo_h);
+    }
+    ESP_LOGI(TAG, "camera ready: %s (pid 0x%04x) preview %lux%lu @%lu fps x%u buffers, photo %ux%u via %s%s%s",
+             film_still_sensor_name(pid), pid, (unsigned long)info.width, (unsigned long)info.height,
+             (unsigned long)info.frame_rate, (unsigned)info.buffer_count, (unsigned)photo_w, (unsigned)photo_h,
+             cam->jpeg_still ? "JPEG" : "viewfinder frame", use_plan ? "" : ", sensor default format",
+             allow_unidentified ? ", unidentified board" : "");
+    /* 设置页"关于"：传感器与照片分辨率（用户关心的是拍出来多大） */
     char text[FILM_CAMERA_STATUS_LEN];
-    snprintf(text, sizeof(text), "%s %lux%lu%s", film_still_sensor_name(pid), (unsigned long)info.width,
-             (unsigned long)info.height, allow_unidentified ? " (NO ID)" : "");
+    snprintf(text, sizeof(text), "%s %ux%u%s", film_still_sensor_name(pid), (unsigned)photo_w, (unsigned)photo_h,
+             allow_unidentified ? " (NO ID)" : "");
     set_status(cam, text);
     return ESP_OK;
 }
@@ -369,7 +475,7 @@ static esp_err_t attach_once(film_camera_handle_t cam, uint32_t width, uint32_t 
  * 连接相机，兼容两种传感器与两种常见状况：
  *   - 模块 EEPROM 描述符无效（没烧录或读坏）：识别到有模块在位时放开 allow_unidentified，
  *     是否真是相机由后面的传感器 ID 把关（认不出会失败，不会误开别的板子）；
- *   - 传感器不支持 640×480：退到它的默认分辨率。
+ *   - 选定的格式开不起来：退到传感器的 Kconfig 默认格式与默认缓冲个数。
  */
 static esp_err_t camera_attach(film_camera_handle_t cam)
 {
@@ -377,18 +483,18 @@ static esp_err_t camera_attach(film_camera_handle_t cam)
     const bool bad_descriptor = mosaico_module_mgr_get_info(MOSAICO_MODULE_MGR_SLOT_LEFT, &slot) == ESP_OK &&
                                 slot.presence == MOSAICO_MODULE_PRESENCE_PRESENT &&
                                 slot.descriptor_state == MOSAICO_MODULE_DESCRIPTOR_INVALID;
-    esp_err_t err = ESP_FAIL;
-    for (size_t i = 0; i < sizeof(k_modes) / sizeof(k_modes[0]); ++i) {
-        err = attach_once(cam, k_modes[i].width, k_modes[i].height, bad_descriptor);
-        if (err == ESP_OK) {
-            set_ready(cam, true);
-            return ESP_OK;
-        }
-        if (err != ESP_ERR_NOT_SUPPORTED) {
-            break;   /* 只有"格式不支持"值得换分辨率重试；找不到模块、取流失败换分辨率也没用 */
-        }
-        ESP_LOGW(TAG, "%ux%u not supported, trying the next mode", (unsigned)k_modes[i].width,
-                 (unsigned)k_modes[i].height);
+    esp_err_t err = attach_once(cam, bad_descriptor, true);
+    /*
+     * 格式类错误才退：esp_video 的 VIDIOC_S_FMT / S_SENSOR_FMT 拒绝时 mosaico_camera 映射成 ESP_FAIL，
+     * 协商后不一致是 ESP_ERR_NOT_SUPPORTED，缓冲申请不到是 ESP_ERR_NO_MEM。模块不存在等其它错误不退。
+     */
+    if (err == ESP_ERR_NOT_SUPPORTED || err == ESP_FAIL || err == ESP_ERR_INVALID_ARG || err == ESP_ERR_NO_MEM) {
+        ESP_LOGW(TAG, "planned camera mode failed (%s), trying the sensor default", esp_err_to_name(err));
+        err = attach_once(cam, bad_descriptor, false);
+    }
+    if (err == ESP_OK) {
+        set_ready(cam, true);
+        return ESP_OK;
     }
     diagnose_failure(cam, err);
     return err;
@@ -484,6 +590,7 @@ static esp_err_t preview_step(film_camera_handle_t cam, const film_preview_confi
     const int64_t wait_t0 = esp_timer_get_time();
 #endif
     ESP_RETURN_ON_ERROR(mosaico_camera_get_frame(cam->camera, &frame), TAG, "get frame");
+    set_frame_wait(cam, esp_timer_get_time());
 #ifdef CONFIG_FILM_PERF_TRACE
     cam->perf_wait_us += esp_timer_get_time() - wait_t0;
     ++cam->perf_wait_frames;
@@ -521,8 +628,8 @@ static esp_err_t preview_step(film_camera_handle_t cam, const film_preview_confi
 /* ---------------------------------------------------------------- 拍照 */
 
 /**
- * 复制下一帧取景原始数据（约 600 KB，最多等一帧）。暗房拿它在几百毫秒内冲出屏幕尺寸的小样，
- * 不必等 2048×1536 原片几秒钟的软件解码。拿不到就返回空来源，不影响拍照。
+ * 复制下一帧取景的 4:3 窗口（640×480 时约 600 KB，960×720 时约 1.3 MB；最多等一帧）。暗房拿它在几百毫秒内
+ * 冲出屏幕尺寸的小样，不必等 JPEG 原片几秒钟的软件解码；无 JPEG 的传感器它就是原片。拿不到就返回空来源。
  */
 static film_viewfinder_source_t grab_proof(film_camera_handle_t cam)
 {
@@ -553,49 +660,96 @@ static film_viewfinder_source_t grab_proof(film_camera_handle_t cam)
     return proof;
 }
 
-/** 点灯后让取景继续出帧（取回即还），直到自动曝光的读数稳定或超时 */
+/** 取景帧 4:3 窗口的平均亮度（稀疏取 Y） */
+static uint32_t frame_luma(const mosaico_camera_frame_t *frame)
+{
+    const size_t stride = frame->bytes_per_line ? frame->bytes_per_line : frame->width * 2u;
+    const film_viewfinder_source_t full = {
+        .uyvy = frame->data, .width = frame->width, .height = frame->height, .stride = stride,
+    };
+    const film_viewfinder_source_t win = film_viewfinder_window_43(&full);
+    uint64_t sum = 0;
+    uint32_t count = 0;
+    for (uint32_t y = 0; y < win.height; y += LUMA_SAMPLE_STEP) {
+        const uint8_t *row = win.uyvy + (size_t)y * stride;
+        for (uint32_t x = 0; x < win.width; x += LUMA_SAMPLE_STEP) {
+            sum += row[x * 2u + 1u];   /* UYVY：U Y0 V Y1 */
+            ++count;
+        }
+    }
+    return count ? (uint32_t)(sum / count) : 0;
+}
+
+/**
+ * 场景读数，用来决定点不点灯、点灯后等多久：
+ *   OV3640 读自动曝光寄存器（film_still_exposure_index，越大越暗）；next_frame 时先等过一帧；
+ *   其余传感器取下一帧取景的平均亮度（越小越暗）。
+ */
+static esp_err_t meter_read(film_camera_handle_t cam, bool next_frame, uint32_t *ret)
+{
+    if (cam->exposure_meter) {
+        if (next_frame) {
+            ESP_RETURN_ON_ERROR(mosaico_camera_discard_frames(cam->camera, 1), TAG, "frame");
+        }
+        return film_still_exposure_index(ret);
+    }
+    mosaico_camera_frame_t frame = { 0 };
+    ESP_RETURN_ON_ERROR(mosaico_camera_get_frame(cam->camera, &frame), TAG, "frame");
+    *ret = frame_luma(&frame);
+    (void)mosaico_camera_return_frame(cam->camera, &frame);
+    return ESP_OK;
+}
+
+static bool meter_dark(film_camera_handle_t cam, uint32_t value)
+{
+    return cam->exposure_meter ? value >= FLASH_FIRE_INDEX : value < FLASH_FIRE_LUMA;
+}
+
+/** 点灯后让取景继续出帧（取回即还），直到场景读数稳定或超时 */
 static void flash_settle(film_camera_handle_t cam)
 {
     const int64_t t0 = esp_timer_get_time();
     uint32_t prev = 0;
-    uint32_t index = 0;
+    uint32_t value = 0;
     int frames = 0;
     while (esp_timer_get_time() - t0 < FLASH_SETTLE_MAX_US) {
-        if (mosaico_camera_discard_frames(cam->camera, 1) != ESP_OK) {
-            break;
-        }
+        const esp_err_t err = meter_read(cam, true, &value);
         ++frames;
-        if (film_still_exposure_index(&index) != ESP_OK) {
-            continue;
+        if (err != ESP_OK) {
+            continue;   /* 读数偶尔读不出（SCCB 与触摸共用总线），整个等待有超时兜底 */
         }
-        const uint32_t diff = index > prev ? index - prev : prev - index;
+        const uint32_t diff = value > prev ? value - prev : prev - value;
         if (frames >= FLASH_SETTLE_MIN_FRAMES && diff * 8u <= prev) {
             break;
         }
-        prev = index;
+        prev = value;
     }
-    ESP_LOGI(TAG, "flash: exposure settled to %" PRIu32 " after %d frames, %lld ms", index, frames,
-             (long long)((esp_timer_get_time() - t0) / 1000));
+    ESP_LOGI(TAG, "flash: %s settled to %" PRIu32 " after %d frames, %lld ms",
+             cam->exposure_meter ? "exposure" : "luma", value, frames, (long long)((esp_timer_get_time() - t0) / 1000));
 }
 
 /**
  * 自动闪光：取景测得够暗才点灯，然后等取景曝光在灯光下收敛，小样与快门帧就都按灯光下的曝光来拍
  * （暗房按小样对齐原片的亮度与颜色，两者必须在同一种光线下）。返回 true 表示灯已点亮，调用方负责关灯。
- * 只有出 JPEG 的 OV3640 能读曝光寄存器；其余传感器不闪。
  */
 static bool flash_prepare(film_camera_handle_t cam, const film_shot_t *shot)
 {
-    if (!shot->flash_auto || !cam->jpeg_still || !cam->streaming) {
+    if (!shot->flash_auto || !cam->streaming) {
         return false;
     }
-    uint32_t index = 0;
-    if (film_still_exposure_index(&index) != ESP_OK) {
-        ESP_LOGW(TAG, "flash: exposure unreadable, shooting without flash");
+    uint32_t value = 0;
+    if (meter_read(cam, false, &value) != ESP_OK) {
+        ESP_LOGW(TAG, "flash: scene unreadable, shooting without flash");
         return false;
     }
-    const bool dark = index >= FLASH_FIRE_INDEX;
-    ESP_LOGI(TAG, "flash: exposure index %" PRIu32 " (fires at %u) -> %s", index, (unsigned)FLASH_FIRE_INDEX,
-             dark ? "fire" : "skip");
+    const bool dark = meter_dark(cam, value);
+    if (cam->exposure_meter) {
+        ESP_LOGI(TAG, "flash: exposure index %" PRIu32 " (fires at %u) -> %s", value, (unsigned)FLASH_FIRE_INDEX,
+                 dark ? "fire" : "skip");
+    } else {
+        ESP_LOGI(TAG, "flash: luma %" PRIu32 " (fires below %u) -> %s", value, (unsigned)FLASH_FIRE_LUMA,
+                 dark ? "fire" : "skip");
+    }
     if (!dark) {
         return false;
     }
@@ -617,7 +771,7 @@ static void capture(film_camera_handle_t cam, const film_shot_t *shot)
     film_perf_mark(FILM_PERF_STREAM_STOPPED);
     esp_err_t err;
     if (cam->jpeg_still) {
-        err = film_still_capture(&still);
+        err = film_still_capture(cam->still_width, cam->still_height, &still);
     } else {
         /* 没有 JPEG 的传感器：快门帧就是刚复制的取景帧，暗房把它编成原片（film_still_t.from_frame） */
         still = (film_still_t){ .from_frame = true };
@@ -644,6 +798,17 @@ static void camera_task(void *arg)
     uint32_t retry_ms = RETRY_DELAY_MS;
     for (;;) {
         if (!cam->camera) {
+            /*
+             * 等界面要取景（开机动画结束）、暗房也没在冲洗时再连接：连接要开一次流，
+             * 取景格式又按连接时的 PSRAM 余量选，动画解码器或冲洗缓冲还在时测得的余量偏小，会白白退到小格式。
+             */
+            xSemaphoreTake(cam->lock, portMAX_DELAY);
+            const bool want = cam->preview_wanted && !cam->hold;
+            xSemaphoreGive(cam->lock);
+            if (!want) {
+                (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(HOLD_POLL_MS));
+                continue;
+            }
             const esp_err_t err = camera_attach(cam);
             if (err != ESP_OK) {
                 if (!logged_missing) {

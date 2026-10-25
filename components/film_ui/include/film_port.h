@@ -198,6 +198,8 @@ typedef struct {
     void (*preview_config)(void *ctx, const film_preview_config_t *config);
     /** 取景是否在运行（相机缺失时为 false，界面显示提示） */
     bool (*camera_ready)(void *ctx);
+    /** 相机在线、取景没暂停，却好几秒没出新帧（界面改为提示，不再停在旧帧上）。可为 NULL。 */
+    bool (*preview_stalled)(void *ctx);
     /**
      * 界面暂时不需要新的取景帧（离开取景页、机身选择面板盖住取景、屏幕调暗或关闭时）：
      * 平台应立刻停掉帧转换省 CPU；暂停持续几秒后还可以关掉取景流，恢复时重新开流

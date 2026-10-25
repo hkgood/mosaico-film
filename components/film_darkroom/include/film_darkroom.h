@@ -100,6 +100,12 @@ typedef struct {
     gfx_rot_t rot;              /*!< 拍摄时的握持方向（与界面的 rot 一致） */
     const char *stamp;          /*!< 日期戳文字，NULL 或空串不压 */
     film_darkroom_size_t size;
+    /*
+     * 存盘成片（FILM_DARKROOM_FULL）的基准边：取景方向的图像宽，即原片短边。
+     * 0 或不小于 FILM_DARKROOM_M6_W 时用标准尺寸（OV3640 原片 1:1）；原片更小（SC101IOT 的 720）时设成原片短边，
+     * 成片同样按原片 1:1 输出、不放大，相纸按比例缩小。各边向下取 16 的倍数（硬件 JPEG 编码按 16×16 读取）。
+     */
+    uint16_t full_edge;
     film_progress_fn_t progress;    /*!< 可选 */
     void *progress_ctx;
     /*

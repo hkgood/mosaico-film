@@ -28,6 +28,8 @@
 #define NOTE_X          40
 #define NOTE_Y          340     /*!< 热点说明两行（行距 18） */
 #define PULSE_DOT_R_Q4  48
+#define PULSE_GLOW_R    8
+#define PULSE_DAMAGE_R  (PULSE_GLOW_R + 1)   /*!< 呼吸点每帧重画的半径：光晕外再留 1 px */
 
 /* 底栏：两个按钮各占一半，或一个通栏按钮 */
 #define BTN_HALF_W      ((BOTTOM_ROW_RIGHT - BOTTOM_ROW_LEFT - BOTTOM_ROW_GAP) / 2)
@@ -300,7 +302,7 @@ static void share_render(film_app_t *app, gfx_canvas_t *c)
     const float t = (float)(app->now % PULSE_MS) / PULSE_MS;
     const uint8_t glow = (uint8_t)(90 + 80 * sinf(t * 6.2831853f));
     const uint32_t dot = st->phase == FILM_SHARE_ERROR ? COLOR_LED : COLOR_AMBER;
-    gfx_glow(c, STEPS_X + 3, STATUS_Y, 8, dot, glow);
+    gfx_glow(c, STEPS_X + 3, STATUS_Y, PULSE_GLOW_R, dot, glow);
     gfx_circle_q4(c, (STEPS_X + 3) * 16, STATUS_Y * 16, PULSE_DOT_R_Q4, dot, 255);
     const gfx_text_style_t ss = ui_cjk(&font_noto_12, COLOR_CREAM, 255, GFX_ALIGN_LEFT, GFX_ROT_0);
     gfx_text(c, &ss, STEPS_X + 14, STATUS_Y + 5, status_text(st, buf, sizeof(buf)));
@@ -368,6 +370,7 @@ static void share_gesture(film_app_t *app, const gesture_t *g)
 {
     share_state_t *s = &app->share;
     const film_share_phase_t phase = s->status.phase;
+    app->dirty = true;   /* own_damage：按钮按下态、重试都要整页重画 */
     if (g->kind == GEST_PRESS) {
         s->button_hotspot_down = !is_hotspot(phase) && ui_hit(s_btn_left, g->x, g->y, 4);
         return;
@@ -412,9 +415,11 @@ static void share_event(film_app_t *app, const film_event_t *ev)
 
 static bool share_step(film_app_t *app, uint32_t dt)
 {
-    (void)app;
     (void)dt;
-    return true;  /* 状态点一直在呼吸 */
+    /* 状态点一直在呼吸：每帧只重画它（整页约 120 ms 一帧，会把开热点时的 CPU 占满） */
+    app_invalidate(app, gfx_rect(STEPS_X + 3 - PULSE_DAMAGE_R, STATUS_Y - PULSE_DAMAGE_R, 2 * PULSE_DAMAGE_R + 1,
+                                 2 * PULSE_DAMAGE_R + 1));
+    return false;
 }
 
 static void share_enter(film_app_t *app)
@@ -446,4 +451,5 @@ const screen_ops_t g_screen_share = {
     .render = share_render,
     .gesture = share_gesture,
     .event = share_event,
+    .own_damage = true,   /* 平时只重画呼吸点，见 share_step */
 };

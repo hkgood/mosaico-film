@@ -57,6 +57,7 @@ struct film_port_pc_t {
     uint64_t preview_at;
     bool preview_dirty;
     bool preview_paused;        /*!< 界面请求暂停：不再出新帧（检验界面在定格期间不依赖新帧） */
+    bool preview_stall;         /*!< FILM_SIM_CAMERA_STALL：相机在线但一帧不出（模拟模块接触不良） */
 
     /* 冲洗工作线程；以下字段由 lock 保护 */
     pthread_t worker;
@@ -476,7 +477,8 @@ static const film_frame_t *pc_preview_acquire(void *ctx)
 {
     film_port_pc_handle_t p = ctx;
     const uint64_t t = now_ms();
-    if (!p->sensor.pixels || p->preview_paused || (!p->preview_dirty && t - p->preview_at < PREVIEW_PERIOD_MS)) {
+    if (!p->sensor.pixels || p->preview_paused || p->preview_stall ||
+        (!p->preview_dirty && t - p->preview_at < PREVIEW_PERIOD_MS)) {
         return NULL;
     }
     preview_slot_t *slot = !p->preview[0].held ? &p->preview[0] : !p->preview[1].held ? &p->preview[1] : NULL;
@@ -528,6 +530,12 @@ static void pc_preview_config(void *ctx, const film_preview_config_t *config)
 static bool pc_camera_ready(void *ctx)
 {
     return ((film_port_pc_handle_t)ctx)->sensor.pixels != NULL;
+}
+
+static bool pc_preview_stalled(void *ctx)
+{
+    film_port_pc_handle_t p = ctx;
+    return p->preview_stall && p->sensor.pixels && !p->preview_paused;
 }
 
 static void pc_preview_pause(void *ctx, bool paused)
@@ -771,6 +779,7 @@ esp_err_t film_port_pc_create(const film_port_pc_config_t *config, film_port_pc_
     if (getenv("FILM_SIM_NO_CAMERA") == NULL && !ppm_read(config->sensor_ppm, &p->sensor)) {
         fprintf(stderr, "film_port_pc: no sensor sample %s, camera disabled\n", config->sensor_ppm);
     }
+    p->preview_stall = getenv("FILM_SIM_CAMERA_STALL") != NULL;
     p->accel[1] = 1.0f;
     p->battery = (film_battery_t){ .percent = BATTERY_DEFAULT_PERCENT };
     p->battery_valid = true;
@@ -811,6 +820,7 @@ esp_err_t film_port_pc_create(const film_port_pc_config_t *config, film_port_pc_
         .preview_release = pc_preview_release,
         .preview_config = pc_preview_config,
         .camera_ready = pc_camera_ready,
+        .preview_stalled = pc_preview_stalled,
         .preview_pause = pc_preview_pause,
         .shoot = pc_shoot,
         .redevelop = pc_redevelop,

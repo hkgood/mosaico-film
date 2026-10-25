@@ -16,7 +16,7 @@
 
 #include "cam_private.h"
 
-#define PICKER_EDGE_PX      36      /*!< 顶边多高范围内按下才算"下拉" */
+#define PICKER_EDGE_PX      80      /*!< 顶边这么高的范围内按下再往下拖算"下拉"；取景框顶部这条带里往下拖不调曝光 */
 #define PICKER_SHEET_H      SCREEN_H /*!< 面板高度：展开时铺满整个屏幕 */
 #define PICKER_RADIUS       22
 #define PICKER_OPEN_RATIO   0.38f   /*!< 松手时拉出超过这个比例就展开 */

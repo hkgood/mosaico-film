@@ -670,7 +670,13 @@ void film_app_delete(film_app_handle_t app)
 static void update_preview_frame(film_app_t *app)
 {
     const film_port_t *p = app->port;
-    app->camera_ok = p->camera_ready ? p->camera_ready(p->ctx) : false;
+    const bool camera_ok = p->camera_ready ? p->camera_ready(p->ctx) : false;
+    const bool stalled = camera_ok && p->preview_stalled && p->preview_stalled(p->ctx);
+    if (camera_ok != app->camera_ok || stalled != app->camera_stalled) {
+        app->live_dirty = true;   /* 取景框在画面与提示之间切换，不等下一帧 */
+    }
+    app->camera_ok = camera_ok;
+    app->camera_stalled = stalled;
     const bool on_camera = app->screen == SCR_CAMERA;
     if (!on_camera && app->frame) {
         p->preview_release(p->ctx, app->frame);

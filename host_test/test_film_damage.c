@@ -294,6 +294,84 @@ static void check_settings_row(film_app_t *app)
     advance(500);
 }
 
+/**
+ * 分享页：平时每帧只重画呼吸的状态点，局部重画与整屏重画逐像素一致；
+ * 状态变化（准备网络 → 同网二维码）时整页重画。
+ */
+static void check_share_pulse(film_app_t *app)
+{
+    const gfx_rect_t full = gfx_rect(0, 0, FILM_APP_SCREEN_W, FILM_APP_SCREEN_H);
+    const uint32_t ids[] = { 1 };
+    app_share(app, ids, 1, SCR_CAMERA);
+    CHECK(app->screen == SCR_SHARE);
+    int pulse_frames = 0, full_frames = 0;
+    for (int i = 0; i < 150; ++i) {
+        const struct timespec ts = { 0, FRAME_MS * 1000000L };
+        nanosleep(&ts, NULL);   /* PC 平台的分享状态按真实时间推进 */
+        s_now += FRAME_MS;
+        if (!film_app_step(app, s_now)) {
+            continue;
+        }
+        const gfx_rect_t d = film_app_damage(app);
+        if (d.w == FILM_APP_SCREEN_W && d.h == FILM_APP_SCREEN_H) {
+            ++full_frames;
+        } else {
+            CHECK(d.w <= 24 && d.h <= 24);   /* 只有状态点 */
+            ++pulse_frames;
+        }
+        render(s_screen, d);
+        render(s_ref, full);
+        if (memcmp(s_screen, s_ref, sizeof(uint16_t) * PIXELS) != 0) {
+            fprintf(stderr, "share frame %d: partial redraw differs from full redraw\n", i);
+            exit(1);
+        }
+    }
+    CHECK(full_frames >= 1 && pulse_frames > 100);
+    tap(FILM_APP_SCREEN_W - 80, FILM_APP_SCREEN_H - 40);   /* 右下 DONE */
+    CHECK(app->screen == SCR_CAMERA);
+    advance(500);
+    printf("share: pulse-only redraw matches full redraw (%d pulse, %d full)\n", pulse_frames, full_frames);
+}
+
+/** 相机在线却不出帧：取景框换成"相机没有出图"提示，不再停在旧帧上 */
+static void check_camera_stall(void)
+{
+    char data_dir[] = "/tmp/film_stall_XXXXXX";
+    CHECK(mkdtemp(data_dir));
+    setenv("FILM_SIM_CAMERA_STALL", "1", 1);
+    const film_port_pc_config_t pc = {
+        .data_dir = data_dir, .sensor_ppm = FILM_TEST_SENSOR, .assets_path = FILM_TEST_ASSETS,
+    };
+    film_port_pc_handle_t port = NULL;
+    CHECK(film_port_pc_create(&pc, &port) == ESP_OK);
+    unsetenv("FILM_SIM_CAMERA_STALL");
+    const film_app_config_t ac = { .port = film_port_pc_table(port), .seed = 42 };
+    film_app_handle_t app = NULL;
+    CHECK(film_app_create(&ac, &app) == ESP_OK);
+    for (int i = 0; i < 20; ++i) {
+        s_now += FRAME_MS;
+        (void)film_app_step(app, s_now);
+    }
+    CHECK(app->camera_ok && app->camera_stalled && !app->frame);
+    gfx_canvas_t c = {
+        .pixels = s_screen, .width = FILM_APP_SCREEN_W, .height = FILM_APP_SCREEN_H,
+        .stride = FILM_APP_SCREEN_W, .clip = gfx_rect(0, 0, FILM_APP_SCREEN_W, FILM_APP_SCREEN_H),
+    };
+    film_app_render(app, &c);
+    /* 取景框中央有提示文字：不全是底色 */
+    const uint16_t bg = gfx_rgb565(0x0B0B0A);
+    int text_px = 0;
+    for (int y = M6_PLATE_Y / 2 - 30; y < M6_PLATE_Y / 2 + 30; ++y) {
+        for (int x = FILM_APP_SCREEN_W / 2 - 80; x < FILM_APP_SCREEN_W / 2 + 80; ++x) {
+            text_px += s_screen[y * FILM_APP_SCREEN_W + x] != bg;
+        }
+    }
+    CHECK(text_px > 50);
+    film_app_delete(app);
+    film_port_pc_delete(port);
+    printf("camera stall: viewfinder shows the hint\n");
+}
+
 int main(void)
 {
     char data_dir[] = "/tmp/film_damage_XXXXXX";
@@ -332,9 +410,11 @@ int main(void)
     advance(2500);   /* 换机身动画 */
     CHECK(app->settings.instant && !app->cam.skin_swapping);
     check_live_only("sx70", gfx_rect(SX_VF_X, 0, FILM_VF_SX_W, FILM_VF_SX_H));
+    check_share_pulse(app);
 
     film_app_delete(s_app);
     film_port_pc_delete(s_port);
+    check_camera_stall();
     free(s_screen);
     free(s_ref);
     free(s_sensor);

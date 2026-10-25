@@ -16,7 +16,8 @@ utils submodules.
   `submodule/esp-mosaico-bsp`
 - A C11 compiler and CMake for host tests
 - Node.js 18+ and FFmpeg only when rebuilding promotional/site media
-- ESP-Mosaico with an OV3640 camera module in the left slot for hardware use
+- ESP-Mosaico with Vibe Mode 0.2 and an OV3640 or SC101IOT camera module in
+  the left slot for hardware use
 
 Clone the application at the path expected by its workspace-relative component
 overrides:
@@ -138,7 +139,8 @@ components/film_assets
 Shooting and full-resolution development are decoupled because the darkroom
 needs most of the PSRAM and both cores, so it cannot run beside the camera.
 
-1. Shutter: the camera captures the 2048×1536 JPEG and the lab writes it as
+1. Shutter: the camera captures the still (2048×1536 JPEG on OV3640, the
+   encoded viewfinder frame on SC101IOT) and the lab writes it as
    `MFnnnnnn_RAW.JPG`, then writes the 36-byte marker `MFnnnnnn.PND`
    (`film_pending.h`: shot parameters + CRC32). The UI is told `SHOT_DONE` and
    the viewfinder restarts immediately.
@@ -163,29 +165,93 @@ for the full-resolution develop and are skipped by the next shutter or tap.
 
 ### Camera boards and "camera not connected"
 
-Two camera boards exist in the field and `film_camera.c` has to cope with both:
+Two camera boards exist in the field. The camera is not configured by a fixed
+size: on every attach `film_camera.c` asks the sensor which formats the
+firmware compiled (`film_sensor_list_modes`, `VIDIOC_ENUM_SENSOR_FMT`), lets
+the pure policy in `components/film_capture_mode` pick a plan, and switches
+the sensor with `VIDIOC_S_SENSOR_FMT` before opening the stream.
 
-| Board | Viewfinder | Still |
+The policy (host-tested in `film_capture_mode_test` with the real format
+tables):
+
+- Viewfinder candidates are landscape UYVY formats whose centred 4:3 window is
+  at least 480×360 and that run at 10 fps or more.
+- With a JPEG still path (OV3640) the viewfinder is only a preview: highest
+  frame rate first, then the smallest frame.
+- Without one (SC101IOT) the viewfinder frame is the photo: the largest 4:3
+  window first, then the frame rate closest to 15 fps.
+- A candidate fits when its stream buffers, plus the esp_video DVP backup
+  buffer, plus a 480×360 conversion buffer and a 1 MB reserve fit in free
+  PSRAM, and one frame fits in the largest free block. Two buffers are tried
+  before one.
+- The still is the largest 4:3 JPEG format.
+
+The plan is made just before the stream starts (the camera task waits until
+the viewfinder is wanted and nothing holds the camera), so the PSRAM figures
+are the real ones. Result with the current `sdkconfig.defaults`:
+
+| Board | Viewfinder | Still / photo |
 | --- | --- | --- |
-| OV3640 | UYVY 640×480 | 2048×1536 JPEG (`film_still.c`) |
-| SC101IOT | UYVY 640×480 (15 fps profile) or the 1280×720 default | the viewfinder frame, JPEG-encoded by the lab (`film_still_t.from_frame`), so 640×480 / 960×720 |
+| OV3640 | UYVY 640×480 @30, 2 buffers | 2048×1536 JPEG (`film_still.c`) |
+| SC101IOT | UYVY 1280×720 @15 (1 buffer when PSRAM is tight) | the 960×720 4:3 window of the viewfinder frame, JPEG-encoded by the lab (`film_still_t.from_frame`) |
 
-Root cause of the reported "camera not connected": the firmware built only the
-SC101IOT 1280×720 profiles while the app requested 640×480, so
-`mosaico_camera_open` returned `ESP_ERR_NOT_SUPPORTED` (format mismatch) and the
-retry loop never succeeded. `sdkconfig.defaults` now also enables
-`CONFIG_CAMERA_SC101IOT_DVP_YUV422_640X480_15FPS`; existing build directories
-need that symbol set (or `idf.py fullclean`).
+SC101IOT 640×480 is a centred crop of the sensor (half the field of view), not
+a scaled frame, so it is only the low-memory fallback and the Kconfig default.
+A format that is not compiled cannot be chosen; add the Kconfig symbol and
+rebuild from a clean `build/`.
 
-`camera_attach` is a small ladder: 640×480 first, then the sensor default
-(`0×0`) when the format is not supported; a present module whose EEPROM
-descriptor is invalid is claimed with `allow_unidentified` (the sensor ID check
-still rejects anything that is not an OV3640/SC101IOT). 16:9 frames are reduced
-to their centred 4:3 window (`film_viewfinder_window_43`) before cropping, so
-viewfinder, proof and still share one geometry. The reason for a failed attach
-is logged once per change and shown in Settings → About (`NO MODULE`,
-`BAD EEPROM`, `NOT A CAMERA`, `ERR …`), which is the first thing to ask users
-for. SC101IOT behaviour is not verified on hardware in this repository.
+`camera_attach` retries without the plan (Kconfig default format, two buffers)
+when the planned attach fails with a format or memory error. A present module
+whose EEPROM descriptor is invalid is claimed with `allow_unidentified` (the
+sensor ID check still rejects anything that is not an OV3640/SC101IOT). 16:9
+frames are reduced to their centred 4:3 window (`film_viewfinder_window_43`)
+before cropping, so viewfinder, proof and still share one geometry. The log
+line `camera ready: …` shows the chosen plan; Settings → About shows the
+sensor and photo size, or the reason for a failed attach (`NO MODULE`,
+`BAD EEPROM`, `NOT A CAMERA`, `ERR …`).
+
+A badly seated module can answer on SCCB and still deliver no frames. When the
+stream is open but no frame has arrived for 2 s (`film_camera_preview_stalled`,
+`film_port_t.preview_stalled`), the viewfinder shows 「相机没有出图 /
+请重新连接相机」 instead of the last frame; pauses, captures and developing do
+not count. `FILM_SIM_CAMERA_STALL=1` reproduces it in the PC preview.
+
+The flash fires on a metered dark scene for both boards: OV3640 reads its
+exposure index, SC101IOT the sampled luma of a viewfinder frame.
+
+Photos are developed at the native size of the still
+(`film_studio_config_t.native_size`, `film_darkroom_job_t.full_edge`): a
+source shorter than 1536 px is laid out 1:1 instead of being upscaled, with
+every edge floored to a multiple of 16 for the hardware JPEG encoder. A
+960×720 SC101IOT photo therefore becomes 720×960 (M6), 720×528 (crop) or
+800×976 (SX-70 print). OV3640 output and the PC preview keep the standard
+sizes.
+
+### Internal RAM and the BSP display patch
+
+Internal RAM is the scarce pool: display transactions, USB, task stacks and the
+share Wi-Fi driver (~48 KB while sharing) need it. Since BSP `5f88b91` the LCD
+copies each PSRAM chunk into an internal DMA bounce buffer that lives until
+the queued transaction is reaped, holding ~75 KB; with Wi-Fi up every frame
+then failed with `ESP_ERR_NO_MEM` (black screen, sharing stuck). The app keeps
+the IDF default malloc threshold (16 KB, as in 1.0) and sets
+`CONFIG_BSP_LCD_PSRAM_DMA_DIRECT=y`, so the LCD DMA reads PSRAM directly.
+
+That option comes from `patches/esp-mosaico-bsp-lcd-psram-dma-direct.patch`.
+`CMakeLists.txt` applies it to `submodule/esp-mosaico-bsp` at configure time
+(skipped when already applied) and stops the build when it no longer applies,
+so a BSP update cannot silently bring the bounce buffers back. Drop the patch
+once the BSP provides an equivalent option.
+
+### Software restart
+
+ESP-Iris restarts the chip for Vibe Mode entry, OTA and remote restart. Camera
+or LCD DMA left running across `esp_restart()` can leave the camera without
+frames after reboot, so `film_port_dev.c` registers a shutdown handler that
+holds the viewfinder (stream off, at most 1.5 s) and pauses the GSP UI (waits
+for the last LCD transfer, at most 200 ms) without resuming it. Panic resets do
+not run shutdown handlers; `main.c` also power-cycles VCC_3V3 on any non
+power-on reset.
 
 ### Settings
 
@@ -304,6 +370,7 @@ snapshots; leave it off in release builds because it costs frame time itself.
 - `main/main.c` — system startup and retained Vibe Mode OTA support.
 - `main/film_shell.c` — GSP canvas lifecycle and UI frame presentation.
 - `main/film_camera.c` / `film_still.c` — preview and full-resolution capture.
+- `main/film_sensor.c` — sensor format enumeration and switching.
 - `main/film_lab.c` / `film_writer.c` — asynchronous development and storage.
 - `main/film_storage.c` — NAND photo library and persisted settings.
 - `main/film_share.c` — LAN/hotspot gallery and session-scoped downloads.
@@ -316,6 +383,7 @@ snapshots; leave it off in release builds because it costs frame time itself.
 - `components/film_ui` — screens, interaction state and `film_port_t`.
 - `components/film_filter` — nine deterministic film looks.
 - `components/film_darkroom` — viewfinder and full-resolution processing.
+- `components/film_capture_mode` — camera format and buffer policy.
 - `components/film_gfx` — small RGB565 drawing primitives.
 - `components/film_assets` — generated asset table and partition image.
 - `components/qrcodegen` — Nayuki QR encoder used by the sharing screen.
@@ -338,16 +406,19 @@ The checked-in binary image allows a clean workspace clone to build without
 regenerating all design assets. When it changes, commit the generated table and
 binary together and install with `system-update`.
 
-The partition layout is:
+The partition layout (Vibe Mode 0.2, `mosaico-retained-test-2m-v2`) is:
 
 ```text
-ota_0    0x210000  0x7f0000
-assets   0xa00000  0x500000
-ui_apps  0xf00000  0x100000
+vibe_mode  app/test   0x20000   0x1c0000   retained Vibe Mode
+main_app   app/ota_0  0x210000  0x7f0000
+assets     data       0xa00000  0x500000
+ui_apps    data       0xf00000  0x100000
 ```
 
 The prefix through application NVS follows the retained-firmware contract and
-must not be moved to make an app-only update pass.
+must not be moved to make an app-only update pass. The build warns that the
+application does not fit `vibe_mode`; that slot never holds the application.
+Devices still on Vibe Mode 0.1 move to 0.2 through `python mosaico.py recover`.
 
 ## Promotional film and website media
 

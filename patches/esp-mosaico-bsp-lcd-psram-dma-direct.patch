@@ -1,0 +1,38 @@
+diff --git a/components/esp-mosaico-bsp/Kconfig b/components/esp-mosaico-bsp/Kconfig
+index dfc33f9..a7ad55c 100644
+--- a/components/esp-mosaico-bsp/Kconfig
++++ b/components/esp-mosaico-bsp/Kconfig
+@@ -34,6 +34,17 @@ menu "ESP-Mosaico BSP"
+             coexistence). 0 = weakest (GPIO_DRIVE_CAP_0), 3 = strongest.
+             Default is 0. Increase if display signal integrity fails at high clock.
+ 
++    config BSP_LCD_PSRAM_DMA_DIRECT
++        bool "Send PSRAM frame data to the LCD without internal bounce buffers"
++        depends on BSP_DISPLAY_ENABLE
++        default n
++        help
++            When disabled, every LCD chunk read from PSRAM is first copied into an
++            internal DMA buffer: up to 10 x 7.5 KB of internal RAM while a frame is
++            in flight. Enable for applications that run Wi-Fi next to the display;
++            the SPI DMA then reads PSRAM directly, which is slower but needs no
++            internal RAM.
++
+     config BSP_MOTOR_ENABLE_PWM
+         bool "Enable LEDC PWM motor control"
+         default y
+diff --git a/components/esp-mosaico-bsp/onboard/display.c b/components/esp-mosaico-bsp/onboard/display.c
+index aa8b656..f78f1b6 100644
+--- a/components/esp-mosaico-bsp/onboard/display.c
++++ b/components/esp-mosaico-bsp/onboard/display.c
+@@ -260,7 +260,11 @@ esp_err_t bsp_display_new(const bsp_display_config_t *config, esp_lcd_panel_hand
+     }
+ 
+     esp_lcd_panel_io_spi_config_t io_config = CO5300_PANEL_IO_QSPI_CONFIG(BSP_LCD_CS, NULL, NULL);
++#if CONFIG_BSP_LCD_PSRAM_DMA_DIRECT
++    io_config.flags.psram_dma_direct = true;
++#else
+     io_config.flags.psram_dma_direct = false;
++#endif
+     ret = esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)BSP_LCD_SPI_HOST, &io_config, &s_panel_io);
+     if (ret != ESP_OK) {
+         spi_bus_free(BSP_LCD_SPI_HOST);
